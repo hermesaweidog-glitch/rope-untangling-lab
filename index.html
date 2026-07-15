@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#111521" />
+    <meta name="description" content="使用 Three.js 測試四條繩索的整數圈纏繞與解開操作。" />
+    <title>Rope Untangling Lab</title>
+  </head>
+  <body>
+    <main id="app">
+      <canvas id="scene" aria-label="四條 3D 繩索互動場景"></canvas>
+
+      <header class="topbar glass">
+        <div>
+          <p class="eyebrow">THREE.JS INTERACTION PROTOTYPE</p>
+          <h1>Rope Untangling Lab</h1>
+        </div>
+        <div class="metrics" aria-live="polite">
+          <div><span>剩餘纏繞</span><strong id="turn-count">6 圈</strong></div>
+          <div><span>操作步數</span><strong id="move-count">0</strong></div>
+        </div>
+      </header>
+
+      <aside class="control-panel glass" aria-label="纏繞操作面板">
+        <section>
+          <p class="step-label">01 選擇兩條繩索</p>
+          <div id="rope-picker" class="rope-picker"></div>
+          <p id="selection-copy" class="selection-copy">先選擇要移動的繩索，再選擇目標繩索。</p>
+        </section>
+
+        <section class="gizmo-section">
+          <p class="step-label">02 旋轉一整圈</p>
+          <div id="twist-wheel" class="twist-wheel" role="slider" tabindex="0" aria-label="纏繞旋轉環" aria-valuemin="-3" aria-valuemax="3" aria-valuenow="0">
+            <div class="wheel-track"></div>
+            <div id="wheel-knob" class="wheel-knob"></div>
+            <div class="wheel-center">
+              <strong id="wheel-value">選擇繩索</strong>
+              <span id="wheel-preview">拖曳圓點繞一圈</span>
+            </div>
+          </div>
+          <div class="turn-buttons">
+            <button id="ccw-button" type="button" disabled>↺ 逆時針 −1</button>
+            <button id="cw-button" type="button" disabled>順時針 +1 ↻</button>
+          </div>
+        </section>
+
+        <section class="action-row">
+          <button id="undo-button" class="secondary" type="button" disabled>復原</button>
+          <button id="reset-button" class="secondary" type="button">重置題目</button>
+          <button id="clear-button" class="secondary" type="button">全部解開</button>
+        </section>
+
+        <p class="hint">滑鼠／觸控拖曳旋轉環；拖動畫面空白處可旋轉 3D 視角。</p>
+      </aside>
+
+      <aside class="ledger glass" aria-label="實際纏繞紀錄">
+        <div class="ledger-heading">
+          <div><p class="step-label">TOPOLOGY LEDGER</p><h2>實際纏繞數量</h2></div>
+          <span id="status-pill" class="status-pill tangled">尚未解開</span>
+        </div>
+        <div id="wrap-list" class="wrap-list"></div>
+        <div class="legend">
+          <span><i class="positive"></i>順時針＋</span>
+          <span><i class="negative"></i>逆時針−</span>
+          <span>上限 ±3 圈／組</span>
+        </div>
+      </aside>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      <div id="win-overlay" class="win-overlay" hidden>
+        <div class="win-card glass">
+          <div class="checkmark">✓</div>
+          <p class="eyebrow">ALL ROPES RELEASED</p>
+          <h2>全部解開了！</h2>
+          <p id="win-copy"></p>
+          <button id="play-again" type="button">再測試一次</button>
+        </div>
+      </div>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
