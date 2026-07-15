@@ -120,7 +120,9 @@ h2 { margin: 2px 0 0; font-size: 19px; }
 .local-target-shine { stroke: rgba(255,255,255,.35); stroke-width: 4; stroke-linecap: round; transform: translateY(-3px); }
 .helix-loop { fill: none; stroke-width: 11; filter: url(#rope-shadow); }
 .node-dot { stroke: #1a1511; stroke-width: 4; }
+.node-dot.underpass { stroke: rgba(255,255,255,.82); stroke-width: 3; stroke-dasharray: 3 2; }
 .node-label { fill: #fff; font-size: 11px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
+.preview-pass-label { font-size: 13px; }
 .preview-rope { stroke-width: 15; stroke-dasharray: 13 9; opacity: .82; pointer-events: none; }
 .preview-node { fill: rgba(255,255,255,.13); stroke-width: 4; pointer-events: none; }
 .hole { cursor: pointer; pointer-events: none; }

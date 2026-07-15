@@ -1,9 +1,9 @@
 import './style.css';
 import {
   ROPE_DEFS,
-  addWrap,
+  addUnderpass,
   beginRope,
-  countActiveTurns,
+  countUnderpassClicks,
   countPassiveHooks,
   createAuthoringState,
   createGameState,
@@ -134,9 +134,9 @@ function requestAuthorWrap(event, rope) {
     return;
   }
   try {
-    state = addWrap(state, rope.id);
-    const turns = state.draft.wraps.find((wrap) => wrap.targetRopeId === rope.id).turns;
-    notify(`${ropeDefinition(state.draft.ropeId).name}纏繞${rope.name}${turns === 2 ? '第二圈' : ''}`);
+    state = addUnderpass(state, rope.id);
+    const passCount = state.draft.wraps.filter((wrap) => wrap.targetRopeId === rope.id).length;
+    notify(`${ropeDefinition(state.draft.ropeId).name}從${rope.name}下方穿過（第 ${passCount} 次）· 放下終點後才判定扭轉`);
     renderAll();
   } catch (error) {
     notify(error.message);
@@ -149,7 +149,7 @@ function requestGameRope(event, rope) {
     const active = state.interactions
       .filter((interaction) => interaction.actorRopeId === rope.id)
       .reduce((sum, interaction) => sum + interaction.turns, 0);
-    notify(active > 0 ? `${rope.name}還有 ${active} 圈纏繞未解開` : `${rope.name}上方還有其他繩子`);
+    notify(active > 0 ? `${rope.name}還有 ${active} 層下穿／扭轉未清除` : `${rope.name}上方還有其他繩子`);
     return;
   }
   state = removeRope(state, rope.id);
@@ -184,7 +184,7 @@ function drawCommittedRopes(geometry) {
       d: data.path,
       tabindex: '0',
       role: 'button',
-      'aria-label': removable ? `取下${rope.name}` : mode === 'game' ? `${rope.name}尚不可取下` : `纏繞${rope.name}`,
+      'aria-label': removable ? `取下${rope.name}` : mode === 'game' ? `${rope.name}尚不可取下` : `讓自由端從${rope.name}下方穿過`,
       'data-rope-id': rope.id,
     });
     const action = (event) => mode === 'game' ? requestGameRope(event, rope) : requestAuthorWrap(event, rope);
@@ -209,7 +209,7 @@ function drawInteractionNodes(geometry) {
       class: `interaction-node${mode === 'game' ? ' game-node' : ''}${focused ? ' focused' : ''}`,
       'data-interaction-id': interaction.id,
     });
-    const loopOffsets = interaction.turns === 2 ? [-13, 13] : [0];
+    const loopOffsets = interaction.kind === 'underpass' ? [] : (interaction.turns === 2 ? [-13, 13] : [0]);
     for (const offset of loopOffsets) {
       const cx = interaction.point.x + interaction.tangent.x * offset;
       const cy = interaction.point.y + interaction.tangent.y * offset;
@@ -218,13 +218,14 @@ function drawInteractionNodes(geometry) {
         transform: `rotate(${angle} ${cx} ${cy})`,
       }));
     }
+    const nodeText = interaction.kind === 'underpass' ? '↓' : `×${interaction.turns}`;
     group.append(
       svgElement('line', { class: 'local-mask', ...line }),
       svgElement('line', { class: 'local-target-shadow', ...line }),
       svgElement('line', { class: 'local-target', ...line, stroke: target.color }),
       svgElement('line', { class: 'local-target-shine', ...line }),
-      svgElement('circle', { class: 'node-dot', cx: interaction.point.x, cy: interaction.point.y, r: 12, fill: actor.color }),
-      svgElement('text', { class: 'node-label', x: interaction.point.x, y: interaction.point.y + 1 }, `×${interaction.turns}`),
+      svgElement('circle', { class: `node-dot ${interaction.kind}`, cx: interaction.point.x, cy: interaction.point.y, r: 12, fill: actor.color }),
+      svgElement('text', { class: 'node-label', x: interaction.point.x, y: interaction.point.y + 1 }, nodeText),
     );
     crossingLayer.append(group);
   }
@@ -232,11 +233,23 @@ function drawInteractionNodes(geometry) {
 
 function draftWaypoints(geometry, endPoint) {
   if (!state.draft) return [];
-  const points = [holePoint(state.draft.startHole)];
-  for (const wrap of state.draft.wraps) {
+  const startPoint = holePoint(state.draft.startHole);
+  const points = [startPoint];
+  state.draft.wraps.forEach((wrap, index) => {
     const target = geometry.ropes.get(wrap.targetRopeId);
-    if (target) points.push(pointAndTangentAt(target.samples, wrap.targetT).point);
-  }
+    if (!target) return;
+    const hook = pointAndTangentAt(target.samples, wrap.targetT);
+    const previous = state.draft.wraps[index - 1];
+    if (previous?.targetRopeId === wrap.targetRopeId) {
+      const normal = { x: -hook.tangent.y, y: hook.tangent.x };
+      const side = Math.sign((startPoint.x - hook.point.x) * normal.x + (startPoint.y - hook.point.y) * normal.y) || 1;
+      points.push({
+        x: hook.point.x + normal.x * side * 58 + hook.tangent.x * 24,
+        y: hook.point.y + normal.y * side * 58 + hook.tangent.y * 24,
+      });
+    }
+    points.push(hook.point);
+  });
   points.push(endPoint ?? BOARD_CENTER);
   return points;
 }
@@ -247,13 +260,19 @@ function drawPreview(geometry) {
   const definition = ropeDefinition(state.draft.ropeId);
   const samples = sampleCurve(draftWaypoints(geometry, previewPoint));
   previewLayer.append(svgElement('path', { class: 'preview-rope', d: pathFromSamples(samples), stroke: definition.color }));
+  const pendingTargets = new Map();
   for (const wrap of state.draft.wraps) {
+    const entry = pendingTargets.get(wrap.targetRopeId) ?? { wrap, count: 0 };
+    entry.count += 1;
+    pendingTargets.set(wrap.targetRopeId, entry);
+  }
+  for (const { wrap, count } of pendingTargets.values()) {
     const target = geometry.ropes.get(wrap.targetRopeId);
     if (!target) continue;
     const hook = pointAndTangentAt(target.samples, wrap.targetT);
     previewLayer.append(
-      svgElement('circle', { class: 'preview-node', cx: hook.point.x, cy: hook.point.y, r: wrap.turns === 2 ? 25 : 18, stroke: definition.color }),
-      svgElement('text', { class: 'node-label', x: hook.point.x, y: hook.point.y + 1 }, `×${wrap.turns}`),
+      svgElement('circle', { class: 'preview-node', cx: hook.point.x, cy: hook.point.y, r: count === 2 ? 25 : 18, stroke: definition.color }),
+      svgElement('text', { class: 'node-label preview-pass-label', x: hook.point.x, y: hook.point.y + 1 }, `↓${count}`),
     );
   }
 }
@@ -324,13 +343,13 @@ function handleGameHole(holeId) {
   if (released.length) {
     const opened = released.map((item) => {
       const target = ropeDefinition(item.targetRopeId).name;
-      return item.remainingTurns ? `${target}剩 ${item.remainingTurns} 圈` : `${target}已解開`;
+      return item.remainingTurns ? `${target}剩 ${item.remainingTurns} 層` : `${target}已清除`;
     }).join('、');
-    notify(`越過纏繞：${opened}`);
+    notify(`越過目標繩：${opened}`);
   } else if (isRopeRemovable(state, rope.id)) {
     notify(`${rope.name}已完全在最上層，點擊發光繩身取下`);
   } else {
-    notify('移孔完成；這次沒有越過可解除的纏繞');
+    notify('移孔完成；這次沒有越過可清除的下穿／扭轉');
   }
 }
 
@@ -399,10 +418,10 @@ function renderGuide() {
   } else {
     steps.wrap.classList.add('active');
     steps.end.classList.add('active');
-    const remaining = 2 - countActiveTurns(state, state.draft.ropeId);
-    instruction.textContent = `可點擊既有繩索加入纏繞（還可 ${remaining} 次），或直接點另一個空洞完成。`;
+    const remaining = 2 - countUnderpassClicks(state, state.draft.ropeId);
+    instruction.textContent = `可點擊既有繩索，讓自由端從其下方穿過（還可 ${remaining} 次）；點空洞放下終點後才結算扭轉。`;
   }
-  activeQuota.textContent = state.draft ? `${countActiveTurns(state, state.draft.ropeId)} / 2` : '0 / 2';
+  activeQuota.textContent = state.draft ? `${countUnderpassClicks(state, state.draft.ropeId)} / 2` : '0 / 2';
   undoButton.disabled = state.history.length === 0;
   sameSeedButton.disabled = state.seed === null;
   startGameButton.disabled = state.ropes.length !== 10 || !validatePuzzle(state).valid;
@@ -422,7 +441,7 @@ function renderAuthorMetrics() {
     validationPill.className = 'validation-pill idle';
     validationPill.textContent = '出題中';
     boardStatus.textContent = state.draft
-      ? `正在建立 ${ropeDefinition(state.draft.ropeId).name} · 已加入 ${countActiveTurns(state, state.draft.ropeId)} 次纏繞`
+      ? `正在建立 ${ropeDefinition(state.draft.ropeId).name} · 已記錄 ${countUnderpassClicks(state, state.draft.ropeId)} 次下穿，等待終點結算`
       : `已完成 ${state.ropes.length} 條 · 還需 ${10 - state.ropes.length} 條`;
   } else if (validation.valid) {
     validationPill.className = 'validation-pill valid';
@@ -439,7 +458,7 @@ function renderGameMetrics() {
   const remainingTurns = state.interactions.reduce((sum, interaction) => sum + interaction.turns, 0);
   ropeCountLabel.textContent = '剩餘繩索';
   holeCountLabel.textContent = '移孔次數';
-  emptyCountLabel.textContent = '未解圈數';
+  emptyCountLabel.textContent = '未清除層數';
   ropeCount.textContent = `${state.ropes.length} / 10`;
   holeCount.textContent = String(state.moveCount);
   emptyCount.textContent = String(remainingTurns);
@@ -460,8 +479,8 @@ function renderGameMetrics() {
     const turns = state.interactions
       .filter((interaction) => interaction.actorRopeId === highest.id)
       .reduce((sum, interaction) => sum + interaction.turns, 0);
-    gameInstruction.textContent = `先解開${highest.name}的 ${turns} 圈纏繞：點繩端，再點跨過目標繩的空洞`;
-    boardStatus.textContent = '雙圈螺旋需要用繩端越過同一條目標繩兩次';
+    gameInstruction.textContent = `先清除${highest.name}的 ${turns} 層下穿／扭轉：點繩端，再點跨過目標繩的空洞`;
+    boardStatus.textContent = '下穿與 ×1 需跨越一次；×2 需跨越同一目標兩次';
   }
 }
 
@@ -470,12 +489,12 @@ function renderRoster() {
   for (const definition of ROPE_DEFS) {
     const placed = state.ropes.some((rope) => rope.id === definition.id);
     const current = state.draft?.ropeId === definition.id;
-    const active = countActiveTurns(state, definition.id);
+    const active = countUnderpassClicks(state, definition.id);
     const passive = countPassiveHooks(state, definition.id);
     const row = document.createElement('div');
     row.className = `roster-row${current ? ' current' : ''}`;
     row.style.setProperty('--rope', definition.color);
-    row.innerHTML = `<i class="roster-swatch"></i><div><strong>${definition.name}</strong><small>${placed ? '已固定兩端' : current ? '正在建立' : '尚未放置'}</small></div><div class="roster-quota">主 ${active}/2<br>被 ${passive}/3</div>`;
+    row.innerHTML = `<i class="roster-swatch"></i><div><strong>${definition.name}</strong><small>${placed ? '已固定兩端' : current ? '正在建立' : '尚未放置'}</small></div><div class="roster-quota">穿 ${active}/2<br>被 ${passive}/3</div>`;
     ropeRoster.append(row);
   }
 }
@@ -487,14 +506,25 @@ function slotLabel(targetT) {
 }
 
 function renderInteractions() {
-  interactionCount.textContent = String(state.interactions.length + (state.draft?.wraps.length ?? 0));
+  const draftGroups = new Map();
+  for (const wrap of state.draft?.wraps ?? []) {
+    const entry = draftGroups.get(wrap.targetRopeId) ?? { ...wrap, clicks: 0 };
+    entry.clicks += 1;
+    draftGroups.set(wrap.targetRopeId, entry);
+  }
+  interactionCount.textContent = String(state.interactions.length + draftGroups.size);
   interactionList.replaceChildren();
   const committed = state.interactions.map((interaction) => ({ ...interaction, draft: false }));
-  const drafts = (state.draft?.wraps ?? []).map((wrap, index) => ({ id: `draft-${index}`, actorRopeId: state.draft.ropeId, ...wrap, draft: true }));
+  const drafts = [...draftGroups.values()].map((wrap, index) => ({
+    id: `draft-${index}`,
+    actorRopeId: state.draft.ropeId,
+    ...wrap,
+    draft: true,
+  }));
   const items = [...committed, ...drafts];
   if (!items.length) {
     const empty = document.createElement('p');
-    empty.textContent = '尚無纏繞節點';
+    empty.textContent = '尚無下穿或扭轉節點';
     interactionList.append(empty);
     return;
   }
@@ -503,7 +533,14 @@ function renderInteractions() {
     const target = ropeDefinition(item.targetRopeId);
     const element = document.createElement('div');
     element.className = 'interaction-item';
-    element.innerHTML = `<strong>${actor.name} → ${target.name}</strong><br><span>${slotLabel(item.targetT)} · ${item.turns === 2 ? '雙圈螺旋' : '局部下穿'}${item.draft ? ' · 預覽' : ''}</span>`;
+    const topologyLabel = item.draft
+      ? `↓${item.clicks} 下穿待終點結算`
+      : item.kind === 'underpass'
+        ? '單純下穿 · 需跨越 1 次清除'
+        : item.kind === 'helix'
+          ? '雙重扭轉 ×2'
+          : '單層扭轉 ×1';
+    element.innerHTML = `<strong>${actor.name} → ${target.name}</strong><br><span>${slotLabel(item.targetT)} · ${topologyLabel}</span>`;
     interactionList.append(element);
   }
 }
@@ -650,7 +687,7 @@ window.ropeAuthorDebug = {
   geometry: () => buildPuzzleGeometry(state),
   clickHole: handleHole,
   wrap: (targetRopeId) => {
-    state = addWrap(state, targetRopeId);
+    state = addUnderpass(state, targetRopeId);
     renderAll();
     return structuredClone(state);
   },

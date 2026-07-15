@@ -4,9 +4,9 @@ import {
   HOLE_COUNT,
   PASSIVE_SLOTS,
   ROPE_DEFS,
-  addWrap,
+  addUnderpass,
   beginRope,
-  countActiveTurns,
+  countUnderpassClicks,
   countPassiveHooks,
   createAuthoringState,
   finishRope,
@@ -18,7 +18,7 @@ import {
 
 function placeRope(state, start, end, targets = []) {
   let next = beginRope(state, start);
-  for (const target of targets) next = addWrap(next, target);
+  for (const target of targets) next = addUnderpass(next, target);
   return finishRope(next, end);
 }
 
@@ -42,15 +42,15 @@ test('placing ten ropes occupies 20 holes and leaves exactly two empty holes', (
   assert.equal(validatePuzzle(state).valid, true);
 });
 
-test('a rope can actively wrap at most twice', () => {
+test('a rope can record at most two underpass clicks', () => {
   let state = createAuthoringState();
   state = placeRope(state, 0, 1);
   state = placeRope(state, 2, 3);
   state = beginRope(state, 4);
-  state = addWrap(state, 'rope-1');
-  state = addWrap(state, 'rope-2');
-  assert.equal(countActiveTurns(state, 'rope-3'), 2);
-  assert.throws(() => addWrap(state, 'rope-1'), /主動纏繞上限/);
+  state = addUnderpass(state, 'rope-1');
+  state = addUnderpass(state, 'rope-2');
+  assert.equal(countUnderpassClicks(state, 'rope-3'), 2);
+  assert.throws(() => addUnderpass(state, 'rope-1'), /下穿上限/);
 });
 
 test('a target receives hooks at middle, quarter, then three-quarter and rejects a fourth', () => {
@@ -62,21 +62,43 @@ test('a target receives hooks at middle, quarter, then three-quarter and rejects
   assert.deepEqual(PASSIVE_SLOTS, [0.5, 0.25, 0.75]);
   assert.equal(countPassiveHooks(state, 'rope-1'), 3);
   state = beginRope(state, 8);
-  assert.throws(() => addWrap(state, 'rope-1'), /被動纏繞上限/);
+  assert.throws(() => addUnderpass(state, 'rope-1'), /被動交匯上限/);
 });
 
-test('wrapping the same target twice reuses one hook and becomes a two-turn helix', () => {
+function twistScenario(clicks, endHoleId) {
   let state = createAuthoringState();
-  state = placeRope(state, 0, 1);
-  state = beginRope(state, 2);
-  state = addWrap(state, 'rope-1');
-  state = addWrap(state, 'rope-1');
-  state = finishRope(state, 3);
-  assert.equal(state.interactions.length, 1);
-  assert.equal(state.interactions[0].turns, 2);
-  assert.equal(state.interactions[0].targetT, 0.5);
-  assert.equal(countActiveTurns(state, 'rope-2'), 2);
-  assert.equal(countPassiveHooks(state, 'rope-1'), 1);
+  state = placeRope(state, 0, 11);
+  state = beginRope(state, 5);
+  for (let index = 0; index < clicks; index += 1) state = addUnderpass(state, 'rope-1');
+  return finishRope(state, endHoleId).interactions[0];
+}
+
+test('one underpass click ending on the opposite side is not a twist', () => {
+  const interaction = twistScenario(1, 17);
+  assert.equal(interaction.kind, 'underpass');
+  assert.equal(interaction.twists, 0);
+  assert.equal(interaction.turns, 1);
+});
+
+test('one underpass click ending on the starting side resolves to one twist', () => {
+  const interaction = twistScenario(1, 6);
+  assert.equal(interaction.kind, 'twist');
+  assert.equal(interaction.twists, 1);
+  assert.equal(interaction.turns, 1);
+});
+
+test('two underpass clicks ending on the opposite side resolve to a double twist', () => {
+  const interaction = twistScenario(2, 17);
+  assert.equal(interaction.kind, 'helix');
+  assert.equal(interaction.twists, 2);
+  assert.equal(interaction.turns, 2);
+});
+
+test('two underpass clicks ending on the starting side resolve to one twist', () => {
+  const interaction = twistScenario(2, 6);
+  assert.equal(interaction.kind, 'twist');
+  assert.equal(interaction.twists, 1);
+  assert.equal(interaction.turns, 1);
 });
 
 test('start and end holes must be distinct and empty', () => {
@@ -103,7 +125,7 @@ test('seeded random generation creates reproducible valid full puzzles', () => {
   assert.equal(getEmptyHoles(first).length, 2);
   assert.equal(validatePuzzle(first).valid, true);
   for (const rope of first.ropes) {
-    assert.ok(countActiveTurns(first, rope.id) <= 2);
+    assert.ok(countUnderpassClicks(first, rope.id) <= 2);
     assert.ok(countPassiveHooks(first, rope.id) <= 3);
   }
 });

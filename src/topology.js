@@ -1,6 +1,9 @@
-export const HOLE_COUNT = 22;
+import { HOLE_COUNT } from './constants.js';
+import { resolveDraftInteractions } from './geometry.js';
+
+export { HOLE_COUNT };
 export const MAX_ROPES = 10;
-export const MAX_ACTIVE_TURNS = 2;
+export const MAX_UNDERPASS_CLICKS = 2;
 export const MAX_PASSIVE_HOOKS = 3;
 export const PASSIVE_SLOTS = Object.freeze([0.5, 0.25, 0.75]);
 
@@ -63,20 +66,23 @@ export function getEmptyHoles(state) {
   return state.holes.filter((hole) => hole.occupant === null);
 }
 
-export function countActiveTurns(state, ropeId) {
+export function countUnderpassClicks(state, ropeId) {
   let total = state.interactions
     .filter((interaction) => interaction.actorRopeId === ropeId)
-    .reduce((sum, interaction) => sum + interaction.turns, 0);
-  if (state.draft?.ropeId === ropeId) {
-    total += state.draft.wraps.reduce((sum, wrap) => sum + wrap.turns, 0);
-  }
+    .reduce((sum, interaction) => sum + (interaction.clicks ?? interaction.turns), 0);
+  if (state.draft?.ropeId === ropeId) total += state.draft.wraps.length;
   return total;
 }
 
 export function countPassiveHooks(state, ropeId) {
-  let total = state.interactions.filter((interaction) => interaction.targetRopeId === ropeId).length;
-  if (state.draft) total += state.draft.wraps.filter((wrap) => wrap.targetRopeId === ropeId).length;
-  return total;
+  const committedTargets = state.interactions.filter((interaction) => interaction.targetRopeId === ropeId).length;
+  if (!state.draft) return committedTargets;
+  const draftTargets = new Set(
+    state.draft.wraps
+      .filter((wrap) => wrap.targetRopeId === ropeId)
+      .map((wrap) => wrap.targetRopeId),
+  );
+  return committedTargets + draftTargets.size;
 }
 
 export function beginRope(state, holeId) {
@@ -99,39 +105,29 @@ export function beginRope(state, holeId) {
   });
 }
 
-export function addWrap(state, targetRopeId) {
+export function addUnderpass(state, targetRopeId) {
   if (!state.draft) throw new Error('請先選擇繩子的起點。');
-  if (targetRopeId === state.draft.ropeId) throw new Error('繩子不能纏繞自己。');
-  if (!state.ropes.some((rope) => rope.id === targetRopeId)) throw new Error('只能纏繞已完成的繩子。');
+  if (targetRopeId === state.draft.ropeId) throw new Error('繩子不能從自己下方穿過。');
+  if (!state.ropes.some((rope) => rope.id === targetRopeId)) throw new Error('只能從已完成的繩子下方穿過。');
 
-  const activeTurns = countActiveTurns(state, state.draft.ropeId);
-  if (activeTurns >= MAX_ACTIVE_TURNS) throw new Error('這條繩子已達主動纏繞上限 2 次。');
+  const activePasses = countUnderpassClicks(state, state.draft.ropeId);
+  if (activePasses >= MAX_UNDERPASS_CLICKS) throw new Error('這條繩子已達下穿上限 2 次。');
 
-  const existingIndex = state.draft.wraps.findIndex((wrap) => wrap.targetRopeId === targetRopeId);
-  if (existingIndex >= 0) {
-    const wraps = structuredClone(state.draft.wraps);
-    if (wraps[existingIndex].turns >= 2) throw new Error('同一對繩只能在同一節點纏繞兩次。');
-    wraps[existingIndex].turns += 1;
-    return commitChange(state, {
-      ...state,
-      draft: { ...state.draft, wraps },
-    });
+  const existingPass = state.draft.wraps.find((wrap) => wrap.targetRopeId === targetRopeId);
+  let targetT = existingPass?.targetT;
+  if (targetT === undefined) {
+    const passiveHooks = countPassiveHooks(state, targetRopeId);
+    if (passiveHooks >= MAX_PASSIVE_HOOKS) throw new Error('目標繩已達被動交匯上限 3 個。');
+    targetT = PASSIVE_SLOTS[passiveHooks];
   }
 
-  const passiveHooks = countPassiveHooks(state, targetRopeId);
-  if (passiveHooks >= MAX_PASSIVE_HOOKS) throw new Error('目標繩已達被動纏繞上限 3 次。');
-
+  const previousPasses = state.draft.wraps.filter((wrap) => wrap.targetRopeId === targetRopeId).length;
   const wraps = [
     ...state.draft.wraps,
     {
       targetRopeId,
-      targetT: PASSIVE_SLOTS[passiveHooks],
-      turns: 1,
-      localOrder: {
-        before: 'actor-top',
-        atNode: 'actor-under',
-        after: 'actor-top',
-      },
+      targetT,
+      passIndex: previousPasses + 1,
     },
   ];
 
@@ -158,14 +154,11 @@ export function finishRope(state, endHoleId) {
     creationOrder: state.nextRopeIndex,
     endpoints: { A: startHole, B: endHoleId },
   };
-  const interactions = state.draft.wraps.map((wrap, index) => ({
+  const resolvedInteractions = resolveDraftInteractions(state, endHoleId);
+  const interactions = resolvedInteractions.map((interaction, index) => ({
     id: `interaction-${state.interactions.length + index + 1}`,
-    kind: wrap.turns === 2 ? 'helix' : 'crossing',
     actorRopeId: state.draft.ropeId,
-    targetRopeId: wrap.targetRopeId,
-    targetT: wrap.targetT,
-    turns: wrap.turns,
-    localOrder: structuredClone(wrap.localOrder),
+    ...structuredClone(interaction),
   }));
 
   return commitChange(state, {
@@ -200,8 +193,8 @@ export function validatePuzzle(state) {
   }
 
   for (const rope of state.ropes) {
-    if (countActiveTurns(state, rope.id) > MAX_ACTIVE_TURNS) errors.push(`${rope.name} 主動纏繞超過 2 次。`);
-    if (countPassiveHooks(state, rope.id) > MAX_PASSIVE_HOOKS) errors.push(`${rope.name} 被動纏繞超過 3 次。`);
+    if (countUnderpassClicks(state, rope.id) > MAX_UNDERPASS_CLICKS) errors.push(`${rope.name} 下穿超過 2 次。`);
+    if (countPassiveHooks(state, rope.id) > MAX_PASSIVE_HOOKS) errors.push(`${rope.name} 被動交匯超過 3 個。`);
   }
 
   for (const interaction of state.interactions) {
@@ -252,7 +245,7 @@ export function generateRandomPuzzle(seed = Date.now()) {
         if (!candidates.length) break;
         const target = candidates[Math.floor(random() * candidates.length)];
         try {
-          state = addWrap(state, target.id);
+          state = addUnderpass(state, target.id);
         } catch {
           break;
         }
@@ -319,7 +312,8 @@ export function moveEndpoint(game, ropeId, endpoint, destinationHoleId, crossedT
       return {
         ...structuredClone(interaction),
         turns,
-        kind: turns === 2 ? 'helix' : 'crossing',
+        twists: turns,
+        kind: turns === 2 ? 'helix' : 'twist',
       };
     })
     .filter((interaction) => interaction.turns > 0);

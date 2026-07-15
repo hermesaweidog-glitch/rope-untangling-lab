@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { beginRope, addWrap, createAuthoringState, finishRope } from '../src/topology.js';
+import { beginRope, addUnderpass, createAuthoringState, finishRope } from '../src/topology.js';
 import {
   BOARD_CENTER,
   BOARD_RADIUS,
@@ -39,7 +39,7 @@ test('endpoint movement detects only active target ropes crossed by its travel l
   let state = createAuthoringState();
   state = finishRope(beginRope(state, 0), 11);
   state = beginRope(state, 5);
-  state = addWrap(state, 'rope-1');
+  state = addUnderpass(state, 'rope-1');
   state = finishRope(state, 16);
 
   assert.deepEqual(findCrossedTargets(state, 'rope-2', 5, 17), ['rope-1']);
@@ -50,7 +50,7 @@ test('actor geometry passes through the target fixed hook point', () => {
   let state = createAuthoringState();
   state = finishRope(beginRope(state, 0), 11);
   state = beginRope(state, 5);
-  state = addWrap(state, 'rope-1');
+  state = addUnderpass(state, 'rope-1');
   state = finishRope(state, 16);
   const geometry = buildPuzzleGeometry(state);
   const interaction = geometry.interactions[0];
@@ -59,12 +59,12 @@ test('actor geometry passes through the target fixed hook point', () => {
   assert.equal(interaction.turns, 1);
 });
 
-test('two wraps on the same target produce one geometry node with two turns', () => {
+test('two underpass clicks on the same target can resolve to one double-twist node', () => {
   let state = createAuthoringState();
   state = finishRope(beginRope(state, 0), 11);
   state = beginRope(state, 4);
-  state = addWrap(state, 'rope-1');
-  state = addWrap(state, 'rope-1');
+  state = addUnderpass(state, 'rope-1');
+  state = addUnderpass(state, 'rope-1');
   state = finishRope(state, 15);
   const geometry = buildPuzzleGeometry(state);
   assert.equal(geometry.interactions.length, 1);

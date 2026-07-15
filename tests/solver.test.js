@@ -6,7 +6,7 @@ import { generatePlayablePuzzle, solvePuzzle } from '../src/solver.js';
 test('the reference tangled puzzle has a complete legal solution', () => {
   const result = solvePuzzle(generateRandomPuzzle(20260715));
   assert.equal(result.solvable, true);
-  assert.equal(result.moveCount, 6);
+  assert.equal(result.moveCount, 4);
   assert.equal(result.removalCount, 10);
 });
 

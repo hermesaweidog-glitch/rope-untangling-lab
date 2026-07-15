@@ -1,4 +1,4 @@
-import { HOLE_COUNT } from './topology.js';
+import { HOLE_COUNT } from './constants.js';
 
 export const BOARD_CENTER = Object.freeze({ x: 500, y: 380 });
 export const BOARD_RADIUS = 276;
@@ -128,6 +128,61 @@ export function buildPuzzleGeometry(state) {
   }
 
   return { ropes, interactions: interactionGeometry };
+}
+
+function signedSide(point, origin, tangent) {
+  return tangent.x * (point.y - origin.y) - tangent.y * (point.x - origin.x);
+}
+
+export function resolveDraftInteractions(state, endHoleId) {
+  if (!state.draft) return [];
+  const geometry = buildPuzzleGeometry(state);
+  const events = state.draft.wraps;
+  const eventHooks = events.map((event) => {
+    const target = geometry.ropes.get(event.targetRopeId);
+    if (!target) throw new Error('找不到下穿目標繩。');
+    return pointAndTangentAt(target.samples, event.targetT);
+  });
+  const groups = new Map();
+  events.forEach((event, index) => {
+    if (!groups.has(event.targetRopeId)) groups.set(event.targetRopeId, []);
+    groups.get(event.targetRopeId).push(index);
+  });
+
+  return [...groups.entries()].map(([targetRopeId, indexes]) => {
+    const firstIndex = indexes[0];
+    const lastIndex = indexes.at(-1);
+    const event = events[firstIndex];
+    const hook = eventHooks[firstIndex];
+    const incoming = firstIndex === 0
+      ? holePoint(state.draft.startHole)
+      : eventHooks[firstIndex - 1].point;
+    const outgoing = lastIndex === events.length - 1
+      ? holePoint(endHoleId)
+      : eventHooks[lastIndex + 1].point;
+    const incomingSide = signedSide(incoming, hook.point, hook.tangent);
+    const outgoingSide = signedSide(outgoing, hook.point, hook.tangent);
+    const sameSide = incomingSide * outgoingSide > 0;
+    const clicks = indexes.length;
+    const twists = clicks === 1
+      ? (sameSide ? 1 : 0)
+      : (sameSide ? 1 : 2);
+
+    return {
+      targetRopeId,
+      targetT: event.targetT,
+      clicks,
+      twists,
+      turns: Math.max(1, twists),
+      kind: twists === 0 ? 'underpass' : (twists === 1 ? 'twist' : 'helix'),
+      sameSide,
+      localOrder: {
+        before: 'actor-top',
+        atNode: 'actor-under',
+        after: 'actor-top',
+      },
+    };
+  });
 }
 
 function segmentsIntersect(a, b, c, d) {
