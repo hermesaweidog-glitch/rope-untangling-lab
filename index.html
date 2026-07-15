@@ -3,80 +3,110 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#111521" />
-    <meta name="description" content="使用 Three.js 測試四條繩索的整數圈纏繞與解開操作。" />
-    <title>Rope Untangling Lab</title>
+    <meta name="theme-color" content="#17130f" />
+    <meta name="description" content="22 洞、10 條彈力繩的 Rope Untangling Game 2.5D 出題工具。" />
+    <title>Rope Untangling 出題工房</title>
   </head>
   <body>
     <main id="app">
-      <canvas id="scene" aria-label="四條 3D 繩索互動場景"></canvas>
-
-      <header class="topbar glass">
-        <div>
-          <p class="eyebrow">THREE.JS INTERACTION PROTOTYPE</p>
-          <h1>Rope Untangling Lab</h1>
+      <header class="topbar panel">
+        <div class="brand">
+          <p class="eyebrow">ROPE UNTANGLING · PUZZLE AUTHOR</p>
+          <h1>繩結出題工房</h1>
         </div>
         <div class="metrics" aria-live="polite">
-          <div><span>剩餘纏繞</span><strong id="turn-count">6 圈</strong></div>
-          <div><span>操作步數</span><strong id="move-count">0</strong></div>
+          <div><span>已放繩索</span><strong id="rope-count">0 / 10</strong></div>
+          <div><span>占用洞位</span><strong id="hole-count">0 / 22</strong></div>
+          <div><span>保留空洞</span><strong id="empty-count">22</strong></div>
         </div>
       </header>
 
-      <aside class="control-panel glass" aria-label="纏繞操作面板">
-        <section>
-          <p class="step-label">01 選擇兩條繩索</p>
-          <div id="rope-picker" class="rope-picker"></div>
-          <p id="selection-copy" class="selection-copy">先選擇要移動的繩索，再選擇目標繩索。</p>
-        </section>
-
-        <section class="gizmo-section">
-          <p class="step-label">02 旋轉一整圈</p>
-          <div id="twist-wheel" class="twist-wheel" role="slider" tabindex="0" aria-label="纏繞旋轉環" aria-valuemin="-3" aria-valuemax="3" aria-valuenow="0">
-            <div class="wheel-track"></div>
-            <div id="wheel-knob" class="wheel-knob"></div>
-            <div class="wheel-center">
-              <strong id="wheel-value">選擇繩索</strong>
-              <span id="wheel-preview">拖曳圓點繞一圈</span>
-            </div>
+      <section class="workspace">
+        <aside class="guide panel" aria-label="出題操作說明">
+          <div>
+            <p class="section-kicker">CURRENT ROPE</p>
+            <div id="current-rope" class="current-rope"></div>
+            <p id="instruction" class="instruction">點擊任一空洞，開始放置第一條繩。</p>
           </div>
-          <div class="turn-buttons">
-            <button id="ccw-button" type="button" disabled>↺ 逆時針 −1</button>
-            <button id="cw-button" type="button" disabled>順時針 +1 ↻</button>
+
+          <ol class="steps">
+            <li id="step-start"><span>1</span><div><strong>選起點</strong><small>點擊一個空洞</small></div></li>
+            <li id="step-wrap"><span>2</span><div><strong>加入纏繞</strong><small>可點既有繩索 0～2 次</small></div></li>
+            <li id="step-end"><span>3</span><div><strong>選終點</strong><small>點擊另一個空洞完成</small></div></li>
+          </ol>
+
+          <div class="quota-card">
+            <div><span>主動纏繞</span><strong id="active-quota">0 / 2</strong></div>
+            <div><span>目標節點</span><strong>½ → ¼ → ¾</strong></div>
           </div>
+
+          <div class="actions">
+            <button id="undo-button" class="secondary" type="button" disabled>↶ 復原一步</button>
+            <button id="same-seed-button" class="secondary" type="button" disabled>重設同一題</button>
+            <button id="clear-button" class="secondary" type="button">清空盤面</button>
+            <button id="random-button" class="primary" type="button">✦ 隨機完整出題</button>
+          </div>
+          <p class="microcopy">新繩預設在最上層；點擊舊繩會建立局部穿越，通過節點後回到最上層。</p>
+        </aside>
+
+        <section class="board-shell" aria-label="22 洞圓形出題盤">
+          <div class="board-tilt">
+            <svg id="board" viewBox="0 0 1000 760" role="application" aria-label="可點擊的 22 洞繩結盤">
+              <defs>
+                <radialGradient id="board-face" cx="46%" cy="38%" r="67%">
+                  <stop offset="0" stop-color="#3f3329" />
+                  <stop offset="0.72" stop-color="#2a211b" />
+                  <stop offset="1" stop-color="#1c1612" />
+                </radialGradient>
+                <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+                  <stop stop-color="#8a6749" />
+                  <stop offset="0.45" stop-color="#573e2d" />
+                  <stop offset="1" stop-color="#281b14" />
+                </linearGradient>
+                <filter id="board-shadow" x="-30%" y="-30%" width="160%" height="180%">
+                  <feDropShadow dx="0" dy="30" stdDeviation="26" flood-color="#000" flood-opacity=".58" />
+                </filter>
+                <filter id="rope-shadow" x="-40%" y="-40%" width="180%" height="180%">
+                  <feDropShadow dx="0" dy="8" stdDeviation="5" flood-color="#000" flood-opacity=".58" />
+                </filter>
+                <filter id="glow" x="-100%" y="-100%" width="300%" height="300%">
+                  <feGaussianBlur stdDeviation="5" result="blur" />
+                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+              </defs>
+              <g id="board-base">
+                <ellipse cx="500" cy="410" rx="338" ry="323" fill="#130f0c" opacity=".88" filter="url(#board-shadow)" />
+                <circle cx="500" cy="380" r="331" fill="url(#rim)" />
+                <circle cx="500" cy="380" r="307" fill="url(#board-face)" stroke="#a77b55" stroke-width="3" />
+                <circle cx="500" cy="380" r="246" fill="none" stroke="#e6c297" stroke-opacity=".08" stroke-width="2" />
+                <circle cx="500" cy="380" r="72" fill="none" stroke="#e6c297" stroke-opacity=".05" stroke-width="2" />
+                <text x="500" y="365" text-anchor="middle" class="board-mark">ROPE</text>
+                <text x="500" y="398" text-anchor="middle" class="board-mark small">UNTANGLING</text>
+              </g>
+              <g id="rope-layer"></g>
+              <g id="crossing-layer"></g>
+              <g id="preview-layer"></g>
+              <g id="hole-layer"></g>
+            </svg>
+          </div>
+          <div id="board-status" class="board-status">尚未放置繩索</div>
         </section>
 
-        <section class="action-row">
-          <button id="undo-button" class="secondary" type="button" disabled>復原</button>
-          <button id="reset-button" class="secondary" type="button">重置題目</button>
-          <button id="clear-button" class="secondary" type="button">全部解開</button>
-        </section>
-
-        <p class="hint">滑鼠／觸控拖曳旋轉環；拖動畫面空白處可旋轉 3D 視角。</p>
-      </aside>
-
-      <aside class="ledger glass" aria-label="實際纏繞紀錄">
-        <div class="ledger-heading">
-          <div><p class="step-label">TOPOLOGY LEDGER</p><h2>實際纏繞數量</h2></div>
-          <span id="status-pill" class="status-pill tangled">尚未解開</span>
-        </div>
-        <div id="wrap-list" class="wrap-list"></div>
-        <div class="legend">
-          <span><i class="positive"></i>順時針＋</span>
-          <span><i class="negative"></i>逆時針−</span>
-          <span>上限 ±3 圈／組</span>
-        </div>
-      </aside>
+        <aside class="inspector panel" aria-label="繩索配額檢查">
+          <div class="inspector-heading">
+            <div><p class="section-kicker">RULE INSPECTOR</p><h2>繩索狀態</h2></div>
+            <span id="validation-pill" class="validation-pill idle">出題中</span>
+          </div>
+          <div id="rope-roster" class="rope-roster"></div>
+          <div class="interaction-log">
+            <div class="log-heading"><strong>纏繞節點</strong><span id="interaction-count">0</span></div>
+            <div id="interaction-list" class="interaction-list"><p>尚無纏繞節點</p></div>
+          </div>
+          <div class="seed-row"><span>題目種子</span><code id="seed-value">手動</code></div>
+        </aside>
+      </section>
 
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
-      <div id="win-overlay" class="win-overlay" hidden>
-        <div class="win-card glass">
-          <div class="checkmark">✓</div>
-          <p class="eyebrow">ALL ROPES RELEASED</p>
-          <h2>全部解開了！</h2>
-          <p id="win-copy"></p>
-          <button id="play-again" type="button">再測試一次</button>
-        </div>
-      </div>
     </main>
     <script type="module" src="/src/main.js"></script>
   </body>

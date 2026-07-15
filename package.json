@@ -1,6 +1,6 @@
 {
   "name": "rope-untangling-lab",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,10 +8,7 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "test": "node --test",
-    "check": "node --check src/main.js && node --check src/topology.js"
-  },
-  "dependencies": {
-    "three": "^0.180.0"
+    "check": "node --check src/main.js && node --check src/topology.js && node --check src/geometry.js"
   },
   "devDependencies": {
     "vite": "^7.1.7"

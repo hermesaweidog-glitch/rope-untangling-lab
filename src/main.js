@@ -1,572 +1,456 @@
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './style.css';
 import {
   ROPE_DEFS,
-  applyTurn,
-  createEmptyState,
-  createInitialState,
-  directionLabel,
-  findPair,
-  isSolved,
-  pairKey,
-  totalAbsoluteTurns,
+  addWrap,
+  beginRope,
+  countActiveTurns,
+  countPassiveHooks,
+  createAuthoringState,
+  finishRope,
+  generateRandomPuzzle,
+  getEmptyHoles,
   undo,
+  validatePuzzle,
 } from './topology.js';
+import {
+  BOARD_CENTER,
+  HOLE_HIT_RADIUS,
+  buildPuzzleGeometry,
+  holePoint,
+  nearestHole,
+  pathFromSamples,
+  pointAndTangentAt,
+  sampleCurve,
+} from './geometry.js';
 
-const canvas = document.querySelector('#scene');
-const turnCount = document.querySelector('#turn-count');
-const moveCount = document.querySelector('#move-count');
-const ropePicker = document.querySelector('#rope-picker');
-const selectionCopy = document.querySelector('#selection-copy');
-const twistWheel = document.querySelector('#twist-wheel');
-const wheelKnob = document.querySelector('#wheel-knob');
-const wheelValue = document.querySelector('#wheel-value');
-const wheelPreview = document.querySelector('#wheel-preview');
-const cwButton = document.querySelector('#cw-button');
-const ccwButton = document.querySelector('#ccw-button');
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const board = document.querySelector('#board');
+const ropeLayer = document.querySelector('#rope-layer');
+const crossingLayer = document.querySelector('#crossing-layer');
+const previewLayer = document.querySelector('#preview-layer');
+const holeLayer = document.querySelector('#hole-layer');
+const ropeCount = document.querySelector('#rope-count');
+const holeCount = document.querySelector('#hole-count');
+const emptyCount = document.querySelector('#empty-count');
+const currentRope = document.querySelector('#current-rope');
+const instruction = document.querySelector('#instruction');
+const activeQuota = document.querySelector('#active-quota');
 const undoButton = document.querySelector('#undo-button');
-const resetButton = document.querySelector('#reset-button');
+const sameSeedButton = document.querySelector('#same-seed-button');
 const clearButton = document.querySelector('#clear-button');
-const wrapList = document.querySelector('#wrap-list');
-const statusPill = document.querySelector('#status-pill');
+const randomButton = document.querySelector('#random-button');
+const ropeRoster = document.querySelector('#rope-roster');
+const interactionList = document.querySelector('#interaction-list');
+const interactionCount = document.querySelector('#interaction-count');
+const validationPill = document.querySelector('#validation-pill');
+const boardStatus = document.querySelector('#board-status');
+const seedValue = document.querySelector('#seed-value');
 const toast = document.querySelector('#toast');
-const winOverlay = document.querySelector('#win-overlay');
-const winCopy = document.querySelector('#win-copy');
-const playAgain = document.querySelector('#play-again');
+const steps = {
+  start: document.querySelector('#step-start'),
+  wrap: document.querySelector('#step-wrap'),
+  end: document.querySelector('#step-end'),
+};
 
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0d1018);
-scene.fog = new THREE.FogExp2(0x0d1018, 0.028);
-
-const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 100);
-camera.position.set(10.5, 11.5, 13.8);
-
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.setSize(innerWidth, innerHeight);
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.15;
-
-const controls = new OrbitControls(camera, canvas);
-controls.enableDamping = true;
-controls.dampingFactor = 0.07;
-controls.target.set(0, 0.2, 0);
-controls.minDistance = 9;
-controls.maxDistance = 28;
-controls.maxPolarAngle = Math.PI * 0.47;
-controls.minPolarAngle = Math.PI * 0.18;
-
-scene.add(new THREE.HemisphereLight(0xaac8ff, 0x25190f, 2.2));
-const keyLight = new THREE.DirectionalLight(0xfff1d7, 4.3);
-keyLight.position.set(4, 10, 6);
-keyLight.castShadow = true;
-keyLight.shadow.mapSize.set(2048, 2048);
-keyLight.shadow.camera.left = -12;
-keyLight.shadow.camera.right = 12;
-keyLight.shadow.camera.top = 12;
-keyLight.shadow.camera.bottom = -12;
-scene.add(keyLight);
-const rimLight = new THREE.PointLight(0x6e82ff, 18, 28);
-rimLight.position.set(-7, 5, -6);
-scene.add(rimLight);
-
-const table = new THREE.Mesh(
-  new THREE.CylinderGeometry(6.35, 6.55, 0.48, 80),
-  new THREE.MeshStandardMaterial({ color: 0x33261d, roughness: 0.58, metalness: 0.06 }),
-);
-table.position.y = -0.28;
-table.receiveShadow = true;
-scene.add(table);
-
-const tableInset = new THREE.Mesh(
-  new THREE.CylinderGeometry(6.05, 6.05, 0.055, 80),
-  new THREE.MeshStandardMaterial({ color: 0x171b25, roughness: 0.82, metalness: 0.08 }),
-);
-tableInset.position.y = -0.005;
-tableInset.receiveShadow = true;
-scene.add(tableInset);
-
-const rings = [2.1, 4.1, 5.7];
-for (const radius of rings) {
-  const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(radius, 0.012, 5, 120),
-    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.065 }),
-  );
-  ring.rotation.x = Math.PI / 2;
-  ring.position.y = 0.035;
-  scene.add(ring);
-}
-
-const ropeGroup = new THREE.Group();
-const handleGroup = new THREE.Group();
-scene.add(ropeGroup, handleGroup);
-
-const ropeMeshes = new Map();
-const ropeMaterials = new Map();
-const baseRopeMaterials = new Map();
-
-for (const rope of ROPE_DEFS) {
-  const color = new THREE.Color(rope.color);
-  const material = new THREE.MeshPhysicalMaterial({
-    color,
-    roughness: 0.68,
-    metalness: 0.02,
-    clearcoat: 0.22,
-    clearcoatRoughness: 0.7,
-  });
-  baseRopeMaterials.set(rope.id, material);
-  ropeMaterials.set(rope.id, material);
-
-  for (const x of [-5.55, 5.55]) {
-    const handle = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.18, 0.18, 0.68, 18),
-      new THREE.MeshStandardMaterial({ color: 0xd69a50, roughness: 0.62 }),
-    );
-    handle.rotation.z = Math.PI / 2;
-    handle.position.set(x, 0.52, rope.z);
-    handle.castShadow = true;
-    handle.userData.ropeId = rope.id;
-    handleGroup.add(handle);
-  }
-}
-
-const pairSlots = new Map();
-const allPairs = [];
-for (let i = 0; i < ROPE_DEFS.length; i += 1) {
-  for (let j = i + 1; j < ROPE_DEFS.length; j += 1) {
-    allPairs.push([ROPE_DEFS[i].id, ROPE_DEFS[j].id]);
-  }
-}
-const slotCenters = [-4.15, -2.5, -0.84, 0.84, 2.5, 4.15];
-allPairs.forEach(([a, b], index) => pairSlots.set(pairKey(a, b), slotCenters[index]));
-
-const gizmo = new THREE.Group();
-const gizmoRing = new THREE.Mesh(
-  new THREE.TorusGeometry(0.69, 0.035, 10, 80),
-  new THREE.MeshBasicMaterial({ color: 0xb9ff66, transparent: true, opacity: 0.5, depthTest: false }),
-);
-gizmoRing.rotation.y = Math.PI / 2;
-const gizmoArrow = new THREE.Mesh(
-  new THREE.ConeGeometry(0.12, 0.35, 18),
-  new THREE.MeshBasicMaterial({ color: 0xb9ff66, depthTest: false }),
-);
-gizmoArrow.rotation.z = -Math.PI / 2;
-gizmoArrow.position.set(0, 0.7, 0);
-gizmo.add(gizmoRing, gizmoArrow);
-gizmo.visible = false;
-scene.add(gizmo);
-
-let state = createInitialState();
-let movingId = null;
-let targetId = null;
-let previewDelta = 0;
-let pointerSelectionStart = null;
+let state = createAuthoringState();
+let previewPoint = null;
 let toastTimer = null;
-let winShown = false;
+let previewFrame = null;
 
-function ropeById(id) {
+function svgElement(tag, attributes = {}, text = '') {
+  const element = document.createElementNS(SVG_NS, tag);
+  for (const [name, value] of Object.entries(attributes)) {
+    if (value !== undefined && value !== null) element.setAttribute(name, String(value));
+  }
+  if (text) element.textContent = text;
+  return element;
+}
+
+function ropeDefinition(id) {
   return ROPE_DEFS.find((rope) => rope.id === id);
-}
-
-function selectedPair() {
-  if (!movingId || !targetId) return null;
-  return findPair(state, movingId, targetId) ?? { moving: movingId, target: targetId, turns: 0 };
-}
-
-function turnsForRendering(wrap) {
-  const selected = selectedPair();
-  if (!selected || !wrap) return wrap?.turns ?? 0;
-  const samePair = pairKey(selected.moving, selected.target) === pairKey(wrap.moving, wrap.target);
-  return wrap.turns + (samePair ? previewDelta : 0);
-}
-
-function activeWrapsForRendering() {
-  const wraps = state.wraps.map((wrap) => ({ ...wrap, turns: turnsForRendering(wrap) }));
-  const selected = selectedPair();
-  if (selected && !findPair(state, selected.moving, selected.target) && Math.abs(previewDelta) > 0.001) {
-    wraps.push({ moving: selected.moving, target: selected.target, turns: previewDelta });
-  }
-  return wraps;
-}
-
-function smoothEnvelope(u) {
-  const s = Math.sin(Math.PI * u);
-  return s * s;
-}
-
-function createRopeCurve(rope) {
-  const points = [];
-  const wraps = activeWrapsForRendering().filter((wrap) => wrap.moving === rope.id && Math.abs(wrap.turns) > 0.001);
-  const segments = 180;
-
-  for (let i = 0; i <= segments; i += 1) {
-    const t = i / segments;
-    const x = THREE.MathUtils.lerp(-5.42, 5.42, t);
-    let y = 0.56;
-    let z = rope.z;
-
-    for (const wrap of wraps) {
-      const center = pairSlots.get(pairKey(wrap.moving, wrap.target));
-      const halfWidth = 0.73;
-      if (x < center - halfWidth || x > center + halfWidth) continue;
-      const u = (x - (center - halfWidth)) / (halfWidth * 2);
-      const envelope = smoothEnvelope(u);
-      const target = ropeById(wrap.target);
-      const radius = 0.43;
-      const angle = u * Math.PI * 2 * wrap.turns - Math.PI / 2;
-      y += envelope * (0.34 + radius * Math.sin(angle));
-      z += envelope * ((target.z - rope.z) + radius * Math.cos(angle));
-    }
-
-    points.push(new THREE.Vector3(x, y, z));
-  }
-
-  return new THREE.CatmullRomCurve3(points, false, 'centripetal');
-}
-
-function rebuildRopes() {
-  for (const rope of ROPE_DEFS) {
-    const oldMesh = ropeMeshes.get(rope.id);
-    if (oldMesh) {
-      ropeGroup.remove(oldMesh);
-      oldMesh.geometry.dispose();
-    }
-
-    const curve = createRopeCurve(rope);
-    const geometry = new THREE.TubeGeometry(curve, 180, 0.125, 10, false);
-    const mesh = new THREE.Mesh(geometry, ropeMaterials.get(rope.id));
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    mesh.userData.ropeId = rope.id;
-    ropeMeshes.set(rope.id, mesh);
-    ropeGroup.add(mesh);
-  }
-  updateRopeHighlights();
-}
-
-function updateRopeHighlights() {
-  for (const rope of ROPE_DEFS) {
-    const material = baseRopeMaterials.get(rope.id);
-    const mesh = ropeMeshes.get(rope.id);
-    mesh.material = material;
-    material.emissive.set(rope.color);
-    material.emissiveIntensity = rope.id === movingId ? 0.34 : rope.id === targetId ? 0.18 : 0.02;
-    material.opacity = movingId && rope.id !== movingId && rope.id !== targetId ? 0.6 : 1;
-    material.transparent = material.opacity < 1;
-  }
-}
-
-function updateGizmo() {
-  const pair = selectedPair();
-  gizmo.visible = Boolean(pair);
-  if (!pair) return;
-  const target = ropeById(pair.target);
-  gizmo.position.set(pairSlots.get(pairKey(pair.moving, pair.target)), 0.58, target.z);
-  const moving = ropeById(pair.moving);
-  gizmoRing.material.color.set(moving.color);
-  gizmoArrow.material.color.set(moving.color);
-  gizmo.rotation.x = previewDelta * Math.PI * 2;
-}
-
-function selectRope(id) {
-  if (!movingId || (movingId && targetId)) {
-    movingId = id;
-    targetId = null;
-    previewDelta = 0;
-  } else if (id === movingId) {
-    movingId = null;
-  } else {
-    const existing = findPair(state, movingId, id);
-    if (existing) {
-      movingId = existing.moving;
-      targetId = existing.target;
-    } else {
-      targetId = id;
-    }
-  }
-  renderAll({ rebuild: false });
-}
-
-function selectPair(moving, target) {
-  movingId = moving;
-  targetId = target;
-  previewDelta = 0;
-  renderAll({ rebuild: false });
-}
-
-function signed(value) {
-  return value > 0 ? `+${value}` : `${value}`;
-}
-
-function renderPicker() {
-  ropePicker.replaceChildren();
-  for (const rope of ROPE_DEFS) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = `rope-chip${rope.id === movingId ? ' moving' : ''}${rope.id === targetId ? ' target' : ''}`;
-    button.style.setProperty('--rope', rope.color);
-    button.textContent = rope.name;
-    button.setAttribute('aria-pressed', String(rope.id === movingId || rope.id === targetId));
-    button.addEventListener('click', () => selectRope(rope.id));
-    ropePicker.append(button);
-  }
-}
-
-function renderSelection() {
-  const pair = selectedPair();
-  const ready = Boolean(pair);
-  twistWheel.classList.toggle('ready', ready);
-  cwButton.disabled = !ready;
-  ccwButton.disabled = !ready;
-  twistWheel.setAttribute('aria-disabled', String(!ready));
-
-  if (!movingId) {
-    selectionCopy.textContent = '先選擇要移動的繩索，再選擇目標繩索。';
-    wheelValue.textContent = '選擇繩索';
-    wheelPreview.textContent = '拖曳圓點繞一圈';
-    return;
-  }
-
-  if (!targetId) {
-    selectionCopy.textContent = `已選 ${ropeById(movingId).name}；現在選擇它要繞行的目標。`;
-    wheelValue.textContent = ropeById(movingId).name;
-    wheelPreview.textContent = '還需要目標繩索';
-    return;
-  }
-
-  const moving = ropeById(pair.moving);
-  const target = ropeById(pair.target);
-  const current = findPair(state, pair.moving, pair.target)?.turns ?? 0;
-  selectionCopy.textContent = `${moving.name}繞${target.name}；反向操作可減少現有圈數。`;
-  wheelValue.textContent = `${signed(current)} 圈`;
-  wheelPreview.textContent = previewDelta
-    ? `預覽 ${signed(Math.round((current + previewDelta) * 100) / 100)} 圈`
-    : `${moving.name} → ${target.name}`;
-  twistWheel.setAttribute('aria-valuenow', String(current));
-}
-
-function renderLedger() {
-  wrapList.replaceChildren();
-  const active = [...state.wraps].sort((a, b) => pairSlots.get(pairKey(a.moving, a.target)) - pairSlots.get(pairKey(b.moving, b.target)));
-
-  if (!active.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-ledger';
-    empty.textContent = '所有纏繞數量均為 0。';
-    wrapList.append(empty);
-    return;
-  }
-
-  for (const wrap of active) {
-    const moving = ropeById(wrap.moving);
-    const target = ropeById(wrap.target);
-    const button = document.createElement('button');
-    button.type = 'button';
-    const selected = movingId && targetId && pairKey(movingId, targetId) === pairKey(wrap.moving, wrap.target);
-    button.className = `wrap-card${selected ? ' selected' : ''}`;
-    button.innerHTML = `
-      <span class="rope-pair" aria-hidden="true">
-        <i class="rope-dot" style="background:${moving.color}"></i>
-        <i class="rope-dot" style="background:${target.color}"></i>
-      </span>
-      <span><strong>${moving.name}繞${target.name}</strong><small>${directionLabel(wrap.turns)}</small></span>
-      <span class="turn-badge ${wrap.turns > 0 ? 'plus' : 'minus'}">${signed(wrap.turns)}</span>
-    `;
-    button.addEventListener('click', () => selectPair(wrap.moving, wrap.target));
-    wrapList.append(button);
-  }
-}
-
-function renderMetrics() {
-  const remaining = totalAbsoluteTurns(state);
-  turnCount.textContent = `${remaining} 圈`;
-  moveCount.textContent = String(state.moves);
-  undoButton.disabled = state.history.length === 0;
-  const solved = isSolved(state);
-  statusPill.className = `status-pill ${solved ? 'solved' : 'tangled'}`;
-  statusPill.textContent = solved ? '全部解開' : '尚未解開';
-}
-
-function renderAll({ rebuild = true } = {}) {
-  renderPicker();
-  renderSelection();
-  renderLedger();
-  renderMetrics();
-  updateRopeHighlights();
-  updateGizmo();
-  if (rebuild) rebuildRopes();
 }
 
 function notify(message) {
   toast.textContent = message;
   toast.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove('show'), 1800);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 2100);
 }
 
-function commitTurn(delta) {
-  const pair = selectedPair();
-  if (!pair || delta === 0) return;
-  const before = findPair(state, pair.moving, pair.target)?.turns ?? 0;
-  state = applyTurn(state, pair.moving, pair.target, delta);
-  const afterPair = findPair(state, pair.moving, pair.target);
-  const after = afterPair?.turns ?? 0;
-  previewDelta = 0;
-  notify(after === 0 ? `${ropeById(pair.moving).name}與${ropeById(pair.target).name}已解除` : `纏繞數 ${signed(before)} → ${signed(after)}`);
-  renderAll();
-  checkWin();
+function boardPointFromEvent(event) {
+  const point = board.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  return point.matrixTransform(board.getScreenCTM().inverse());
 }
 
-function checkWin() {
-  if (!isSolved(state) || winShown) return;
-  winShown = true;
-  winCopy.textContent = `你用 ${state.moves} 步把 4 條繩索的實際纏繞數量降到 0。`;
-  setTimeout(() => { winOverlay.hidden = false; }, 420);
+function lineAround(point, tangent, halfLength = 31) {
+  return {
+    x1: point.x - tangent.x * halfLength,
+    y1: point.y - tangent.y * halfLength,
+    x2: point.x + tangent.x * halfLength,
+    y2: point.y + tangent.y * halfLength,
+  };
 }
 
-cwButton.addEventListener('click', () => commitTurn(1));
-ccwButton.addEventListener('click', () => commitTurn(-1));
+function drawCommittedRopes(geometry) {
+  ropeLayer.replaceChildren();
+  for (const rope of [...state.ropes].sort((a, b) => a.creationOrder - b.creationOrder)) {
+    const data = geometry.ropes.get(rope.id);
+    const group = svgElement('g', { class: 'rope-group', 'data-rope-id': rope.id });
+    group.append(
+      svgElement('path', { class: 'rope-shadow', d: data.path }),
+      svgElement('path', { class: 'rope-body', d: data.path, stroke: rope.color }),
+      svgElement('path', { class: 'rope-shine', d: data.path }),
+    );
+    const hit = svgElement('path', {
+      class: 'rope-hit',
+      d: data.path,
+      tabindex: '0',
+      role: 'button',
+      'aria-label': `纏繞 ${rope.name}`,
+      'data-rope-id': rope.id,
+    });
+    const requestWrap = (event) => {
+      event.stopPropagation();
+      if (!state.draft) {
+        notify('請先點擊空洞，開始放置新繩。');
+        return;
+      }
+      try {
+        state = addWrap(state, rope.id);
+        notify(`${ropeDefinition(state.draft.ropeId).name}纏繞${rope.name}${state.draft.wraps.find((wrap) => wrap.targetRopeId === rope.id).turns === 2 ? '第二圈' : ''}`);
+        renderAll();
+      } catch (error) {
+        notify(error.message);
+      }
+    };
+    hit.addEventListener('click', requestWrap);
+    hit.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') requestWrap(event);
+    });
+    group.append(hit);
+    ropeLayer.append(group);
+  }
+}
+
+function drawInteractionNodes(geometry) {
+  crossingLayer.replaceChildren();
+  for (const interaction of geometry.interactions) {
+    const actor = ropeDefinition(interaction.actorRopeId);
+    const target = ropeDefinition(interaction.targetRopeId);
+    const line = lineAround(interaction.point, interaction.tangent);
+    const angle = Math.atan2(interaction.tangent.y, interaction.tangent.x) * 180 / Math.PI;
+    const group = svgElement('g', { class: 'interaction-node', 'data-interaction-id': interaction.id });
+
+    const loopOffsets = interaction.turns === 2 ? [-13, 13] : [0];
+    for (const offset of loopOffsets) {
+      const cx = interaction.point.x + interaction.tangent.x * offset;
+      const cy = interaction.point.y + interaction.tangent.y * offset;
+      group.append(svgElement('ellipse', {
+        class: 'helix-loop',
+        cx,
+        cy,
+        rx: 15,
+        ry: 27,
+        stroke: actor.color,
+        transform: `rotate(${angle} ${cx} ${cy})`,
+      }));
+    }
+
+    group.append(
+      svgElement('line', { class: 'local-mask', ...line }),
+      svgElement('line', { class: 'local-target-shadow', ...line }),
+      svgElement('line', { class: 'local-target', ...line, stroke: target.color }),
+      svgElement('line', { class: 'local-target-shine', ...line }),
+      svgElement('circle', { class: 'node-dot', cx: interaction.point.x, cy: interaction.point.y, r: 12, fill: actor.color }),
+      svgElement('text', { class: 'node-label', x: interaction.point.x, y: interaction.point.y + 1 }, `×${interaction.turns}`),
+    );
+    crossingLayer.append(group);
+  }
+}
+
+function draftWaypoints(geometry, endPoint) {
+  if (!state.draft) return [];
+  const points = [holePoint(state.draft.startHole)];
+  for (const wrap of state.draft.wraps) {
+    const target = geometry.ropes.get(wrap.targetRopeId);
+    if (target) points.push(pointAndTangentAt(target.samples, wrap.targetT).point);
+  }
+  points.push(endPoint ?? BOARD_CENTER);
+  return points;
+}
+
+function drawPreview(geometry) {
+  previewLayer.replaceChildren();
+  if (!state.draft) return;
+  const definition = ropeDefinition(state.draft.ropeId);
+  const points = draftWaypoints(geometry, previewPoint);
+  const samples = sampleCurve(points);
+  previewLayer.append(svgElement('path', {
+    class: 'preview-rope',
+    d: pathFromSamples(samples),
+    stroke: definition.color,
+  }));
+  for (const wrap of state.draft.wraps) {
+    const target = geometry.ropes.get(wrap.targetRopeId);
+    if (!target) continue;
+    const hook = pointAndTangentAt(target.samples, wrap.targetT);
+    previewLayer.append(
+      svgElement('circle', {
+        class: 'preview-node',
+        cx: hook.point.x,
+        cy: hook.point.y,
+        r: wrap.turns === 2 ? 25 : 18,
+        stroke: definition.color,
+      }),
+      svgElement('text', { class: 'node-label', x: hook.point.x, y: hook.point.y + 1 }, `×${wrap.turns}`),
+    );
+  }
+}
+
+function handleHole(holeId) {
+  try {
+    if (state.holes[holeId].occupant) {
+      notify(`洞位 ${holeId + 1} 已被占用。`);
+      return;
+    }
+    if (!state.draft) {
+      state = beginRope(state, holeId);
+      previewPoint = holePoint(holeId);
+      notify(`已選洞位 ${holeId + 1} 為起點`);
+    } else {
+      const name = ropeDefinition(state.draft.ropeId).name;
+      state = finishRope(state, holeId);
+      previewPoint = null;
+      notify(`${name}已完成；原有繩索 ${state.ropes.length} 條`);
+    }
+    renderAll();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+function drawHoles() {
+  holeLayer.replaceChildren();
+  for (const hole of state.holes) {
+    const point = holePoint(hole.id);
+    const occupant = hole.occupant;
+    const group = svgElement('g', {
+      class: `hole ${occupant ? 'occupied' : 'empty'}${state.draft?.startHole === hole.id ? ' selected' : ''}`,
+      transform: `translate(${point.x} ${point.y})`,
+      tabindex: '0',
+      role: 'button',
+      'aria-label': occupant ? `洞位 ${hole.id + 1}，已被${ropeDefinition(occupant.ropeId).name}占用` : `空洞 ${hole.id + 1}`,
+      'data-hole-id': hole.id,
+    });
+    group.append(
+      svgElement('circle', { class: 'hole-hit', r: HOLE_HIT_RADIUS }),
+      svgElement('circle', { class: 'hole-well', r: 22 }),
+      svgElement('circle', { class: 'hole-rim', r: 28 }),
+    );
+    if (occupant) {
+      const definition = ropeDefinition(occupant.ropeId);
+      group.append(
+        svgElement('circle', { class: 'plug-shadow', cx: 0, cy: 0, r: 18 }),
+        svgElement('circle', { class: 'plug', cx: 0, cy: -3, r: 17, fill: definition.color }),
+        svgElement('ellipse', { class: 'plug-cap', cx: -5, cy: -10, rx: 6, ry: 4 }),
+      );
+    } else {
+      group.append(svgElement('text', { class: 'hole-number', x: 0, y: 1 }, String(hole.id + 1)));
+    }
+    group.addEventListener('click', (event) => {
+      event.stopPropagation();
+      handleHole(hole.id);
+    });
+    group.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        handleHole(hole.id);
+      }
+    });
+    holeLayer.append(group);
+  }
+}
+
+function renderGuide() {
+  const definition = state.nextRopeIndex < ROPE_DEFS.length ? ROPE_DEFS[state.nextRopeIndex] : null;
+  if (definition) {
+    currentRope.innerHTML = `<i class="rope-swatch" style="--rope:${definition.color}"></i><div><strong>${definition.name}</strong><small>第 ${state.nextRopeIndex + 1}／10 條</small></div>`;
+  } else {
+    currentRope.innerHTML = '<div><strong>十條繩都已完成</strong><small>盤面保留兩個空洞</small></div>';
+  }
+
+  Object.values(steps).forEach((step) => step.classList.remove('active'));
+  if (state.ropes.length === 10) {
+    instruction.textContent = '出題完成。可檢查右側配額，或產生另一個隨機繩結。';
+  } else if (!state.draft) {
+    steps.start.classList.add('active');
+    instruction.textContent = '點擊任一空洞作為新繩的起點。';
+  } else {
+    steps.wrap.classList.add('active');
+    steps.end.classList.add('active');
+    const remaining = 2 - countActiveTurns(state, state.draft.ropeId);
+    instruction.textContent = `可點擊既有繩索加入纏繞（還可 ${remaining} 次），或直接點另一個空洞完成。`;
+  }
+
+  activeQuota.textContent = state.draft ? `${countActiveTurns(state, state.draft.ropeId)} / 2` : '0 / 2';
+  undoButton.disabled = state.history.length === 0;
+  sameSeedButton.disabled = state.seed === null;
+}
+
+function renderMetricsAndValidation() {
+  const empty = getEmptyHoles(state).length;
+  ropeCount.textContent = `${state.ropes.length} / 10`;
+  holeCount.textContent = `${22 - empty} / 22`;
+  emptyCount.textContent = String(empty);
+  seedValue.textContent = state.seed === null ? '手動' : String(state.seed);
+
+  const validation = validatePuzzle(state);
+  if (state.ropes.length < 10) {
+    validationPill.className = 'validation-pill idle';
+    validationPill.textContent = '出題中';
+    boardStatus.textContent = state.draft
+      ? `正在建立 ${ropeDefinition(state.draft.ropeId).name} · 已加入 ${countActiveTurns(state, state.draft.ropeId)} 次纏繞`
+      : `已完成 ${state.ropes.length} 條 · 還需 ${10 - state.ropes.length} 條`;
+  } else if (validation.valid) {
+    validationPill.className = 'validation-pill valid';
+    validationPill.textContent = '規則通過';
+    boardStatus.textContent = `出題完成 · 20 個端點已固定 · 保留 ${empty} 個空洞`;
+  } else {
+    validationPill.className = 'validation-pill invalid';
+    validationPill.textContent = '規則錯誤';
+    boardStatus.textContent = validation.errors[0];
+  }
+}
+
+function renderRoster() {
+  ropeRoster.replaceChildren();
+  for (const definition of ROPE_DEFS) {
+    const placed = state.ropes.some((rope) => rope.id === definition.id);
+    const current = state.draft?.ropeId === definition.id;
+    const active = countActiveTurns(state, definition.id);
+    const passive = countPassiveHooks(state, definition.id);
+    const row = document.createElement('div');
+    row.className = `roster-row${current ? ' current' : ''}`;
+    row.style.setProperty('--rope', definition.color);
+    row.innerHTML = `
+      <i class="roster-swatch"></i>
+      <div><strong>${definition.name}</strong><small>${placed ? '已固定兩端' : current ? '正在建立' : '尚未放置'}</small></div>
+      <div class="roster-quota">主 ${active}/2<br>被 ${passive}/3</div>
+    `;
+    ropeRoster.append(row);
+  }
+}
+
+function slotLabel(targetT) {
+  if (targetT === 0.5) return '中點 ½';
+  if (targetT === 0.25) return '節點 ¼';
+  return '節點 ¾';
+}
+
+function renderInteractions() {
+  interactionCount.textContent = String(state.interactions.length + (state.draft?.wraps.length ?? 0));
+  interactionList.replaceChildren();
+  const committed = state.interactions.map((interaction) => ({ ...interaction, draft: false }));
+  const drafts = (state.draft?.wraps ?? []).map((wrap, index) => ({
+    id: `draft-${index}`,
+    actorRopeId: state.draft.ropeId,
+    ...wrap,
+    draft: true,
+  }));
+  const items = [...committed, ...drafts];
+  if (!items.length) {
+    const empty = document.createElement('p');
+    empty.textContent = '尚無纏繞節點';
+    interactionList.append(empty);
+    return;
+  }
+  for (const item of items) {
+    const actor = ropeDefinition(item.actorRopeId);
+    const target = ropeDefinition(item.targetRopeId);
+    const element = document.createElement('div');
+    element.className = 'interaction-item';
+    element.innerHTML = `<strong>${actor.name} → ${target.name}</strong><br><span>${slotLabel(item.targetT)} · ${item.turns === 2 ? '雙圈螺旋' : '局部下穿'}${item.draft ? ' · 預覽' : ''}</span>`;
+    interactionList.append(element);
+  }
+}
+
+function renderAll() {
+  const geometry = buildPuzzleGeometry(state);
+  drawCommittedRopes(geometry);
+  drawInteractionNodes(geometry);
+  drawPreview(geometry);
+  drawHoles();
+  renderGuide();
+  renderMetricsAndValidation();
+  renderRoster();
+  renderInteractions();
+}
+
+board.addEventListener('pointermove', (event) => {
+  if (!state.draft) return;
+  previewPoint = boardPointFromEvent(event);
+  if (previewFrame) return;
+  previewFrame = requestAnimationFrame(() => {
+    previewFrame = null;
+    drawPreview(buildPuzzleGeometry(state));
+  });
+});
+
+board.addEventListener('click', (event) => {
+  if (event.target.closest?.('.rope-hit')) return;
+  const closest = nearestHole(boardPointFromEvent(event));
+  if (closest) handleHole(closest.id);
+});
+
 undoButton.addEventListener('click', () => {
   state = undo(state);
-  previewDelta = 0;
-  winShown = false;
-  winOverlay.hidden = true;
+  previewPoint = state.draft ? holePoint(state.draft.startHole) : null;
   renderAll();
   notify('已復原上一步');
 });
-resetButton.addEventListener('click', () => {
-  state = createInitialState();
-  movingId = null;
-  targetId = null;
-  previewDelta = 0;
-  winShown = false;
-  winOverlay.hidden = true;
-  renderAll();
-  notify('已重置為 6 圈纏繞');
-});
+
 clearButton.addEventListener('click', () => {
-  state = { ...createEmptyState(), moves: state.moves + 1, history: [...state.history] };
-  previewDelta = 0;
+  state = createAuthoringState();
+  previewPoint = null;
   renderAll();
-  checkWin();
-});
-playAgain.addEventListener('click', () => resetButton.click());
-
-let wheelDragging = false;
-let lastWheelAngle = 0;
-let wheelAccumulated = 0;
-let wheelRenderRequested = false;
-
-function angleFromPointer(event) {
-  const rect = twistWheel.getBoundingClientRect();
-  return Math.atan2(event.clientY - (rect.top + rect.height / 2), event.clientX - (rect.left + rect.width / 2));
-}
-
-function requestPreviewRender() {
-  if (wheelRenderRequested) return;
-  wheelRenderRequested = true;
-  requestAnimationFrame(() => {
-    wheelRenderRequested = false;
-    renderSelection();
-    updateGizmo();
-    rebuildRopes();
-  });
-}
-
-wheelKnob.addEventListener('pointerdown', (event) => {
-  if (!selectedPair()) return;
-  wheelDragging = true;
-  wheelAccumulated = 0;
-  lastWheelAngle = angleFromPointer(event);
-  wheelKnob.setPointerCapture(event.pointerId);
-  controls.enabled = false;
+  notify('盤面已清空');
 });
 
-wheelKnob.addEventListener('pointermove', (event) => {
-  if (!wheelDragging) return;
-  const angle = angleFromPointer(event);
-  let delta = angle - lastWheelAngle;
-  if (delta > Math.PI) delta -= Math.PI * 2;
-  if (delta < -Math.PI) delta += Math.PI * 2;
-  wheelAccumulated += delta;
-  lastWheelAngle = angle;
-  previewDelta = wheelAccumulated / (Math.PI * 2);
-  twistWheel.style.setProperty('--angle', `${-90 + THREE.MathUtils.radToDeg(wheelAccumulated)}deg`);
-  requestPreviewRender();
+randomButton.addEventListener('click', () => {
+  const seed = Date.now() >>> 0;
+  state = generateRandomPuzzle(seed);
+  previewPoint = null;
+  renderAll();
+  notify(`已產生完整題目 · seed ${seed}`);
 });
 
-function endWheelDrag(event) {
-  if (!wheelDragging) return;
-  wheelDragging = false;
-  controls.enabled = true;
-  if (wheelKnob.hasPointerCapture(event.pointerId)) wheelKnob.releasePointerCapture(event.pointerId);
-  const revolutions = wheelAccumulated / (Math.PI * 2);
-  let delta = Math.round(revolutions);
-  if (delta === 0 && Math.abs(revolutions) >= 0.6) delta = Math.sign(revolutions);
-  previewDelta = 0;
-  wheelAccumulated = 0;
-  twistWheel.style.setProperty('--angle', '-90deg');
-  if (delta !== 0) commitTurn(delta);
-  else {
-    renderAll();
-    notify('請沿旋轉環拖曳至少約 0.6 圈');
-  }
-}
-wheelKnob.addEventListener('pointerup', endWheelDrag);
-wheelKnob.addEventListener('pointercancel', endWheelDrag);
-twistWheel.addEventListener('keydown', (event) => {
-  if (!selectedPair()) return;
-  if (event.key === 'ArrowRight' || event.key === 'ArrowUp') { event.preventDefault(); commitTurn(1); }
-  if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') { event.preventDefault(); commitTurn(-1); }
+sameSeedButton.addEventListener('click', () => {
+  if (state.seed === null) return;
+  state = generateRandomPuzzle(state.seed);
+  previewPoint = null;
+  renderAll();
+  notify(`已重設 seed ${state.seed}`);
 });
 
-const raycaster = new THREE.Raycaster();
-const pointer = new THREE.Vector2();
-canvas.addEventListener('pointerdown', (event) => {
-  pointerSelectionStart = { x: event.clientX, y: event.clientY };
-});
-canvas.addEventListener('pointerup', (event) => {
-  if (!pointerSelectionStart) return;
-  const distance = Math.hypot(event.clientX - pointerSelectionStart.x, event.clientY - pointerSelectionStart.y);
-  pointerSelectionStart = null;
-  if (distance > 7) return;
-  const rect = canvas.getBoundingClientRect();
-  pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-  pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-  raycaster.setFromCamera(pointer, camera);
-  const hits = raycaster.intersectObjects([...ropeMeshes.values(), ...handleGroup.children], false);
-  const ropeId = hits[0]?.object.userData.ropeId;
-  if (ropeId) selectRope(ropeId);
-});
-
-window.addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-});
-
-function animate() {
-  controls.update();
-  gizmoArrow.position.y = 0.69 + Math.sin(performance.now() * 0.003) * 0.05;
-  renderer.render(scene, camera);
-  requestAnimationFrame(animate);
-}
-
-window.ropeDebug = {
+window.ropeAuthorDebug = {
   getState: () => structuredClone(state),
-  getSelection: () => ({ movingId, targetId, previewDelta }),
-  selectPair,
-  turn: commitTurn,
-  reset: () => resetButton.click(),
-  solve: () => clearButton.click(),
-  ropeCount: ROPE_DEFS.length,
+  validate: () => validatePuzzle(state),
+  geometry: () => buildPuzzleGeometry(state),
+  clickHole: handleHole,
+  wrap: (targetRopeId) => {
+    state = addWrap(state, targetRopeId);
+    renderAll();
+    return structuredClone(state);
+  },
+  random: (seed = 20260715) => {
+    state = generateRandomPuzzle(seed);
+    previewPoint = null;
+    renderAll();
+    return structuredClone(state);
+  },
+  clear: () => clearButton.click(),
 };
 
-rebuildRopes();
-renderAll({ rebuild: false });
-animate();
+renderAll();
