@@ -129,3 +129,35 @@ export function buildPuzzleGeometry(state) {
 
   return { ropes, interactions: interactionGeometry };
 }
+
+function segmentsIntersect(a, b, c, d) {
+  const denominator = (b.x - a.x) * (d.y - c.y) - (b.y - a.y) * (d.x - c.x);
+  if (Math.abs(denominator) < 0.000001) return false;
+  const t = ((c.x - a.x) * (d.y - c.y) - (c.y - a.y) * (d.x - c.x)) / denominator;
+  const u = ((c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x)) / denominator;
+  return t > 0.001 && t < 0.999 && u >= 0 && u <= 1;
+}
+
+export function findCrossedTargets(state, actorRopeId, fromHoleId, toHoleId) {
+  const geometry = buildPuzzleGeometry(state);
+  const movementStart = holePoint(fromHoleId);
+  const movementEnd = holePoint(toHoleId);
+  const activeTargets = new Set(
+    state.interactions
+      .filter((interaction) => interaction.actorRopeId === actorRopeId)
+      .map((interaction) => interaction.targetRopeId),
+  );
+  const crossed = [];
+
+  for (const targetRopeId of activeTargets) {
+    const target = geometry.ropes.get(targetRopeId);
+    if (!target) continue;
+    for (let index = 1; index < target.samples.length; index += 1) {
+      if (segmentsIntersect(movementStart, movementEnd, target.samples[index - 1], target.samples[index])) {
+        crossed.push(targetRopeId);
+        break;
+      }
+    }
+  }
+  return crossed;
+}

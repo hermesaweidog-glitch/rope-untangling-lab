@@ -267,3 +267,114 @@ export function generateRandomPuzzle(seed = Date.now()) {
     history: [],
   };
 }
+
+function gamePuzzleSnapshot(state) {
+  return {
+    holes: structuredClone(state.holes),
+    ropes: structuredClone(state.ropes),
+    interactions: structuredClone(state.interactions),
+    seed: state.seed ?? null,
+  };
+}
+
+export function createGameState(puzzleState) {
+  if (puzzleState.draft) throw new Error('請先完成正在建立的繩子。');
+  const puzzle = gamePuzzleSnapshot(puzzleState);
+  return {
+    ...structuredClone(puzzle),
+    initialPuzzle: structuredClone(puzzle),
+    moveCount: 0,
+    removedCount: 0,
+    lastMove: null,
+  };
+}
+
+export function moveEndpoint(game, ropeId, endpoint, destinationHoleId, crossedTargetIds = []) {
+  if (!['A', 'B'].includes(endpoint)) throw new Error('未知的繩端。');
+  const rope = game.ropes.find((item) => item.id === ropeId);
+  if (!rope) throw new Error('找不到這條繩子。');
+  assertEmptyHole(game, destinationHoleId);
+
+  const sourceHoleId = rope.endpoints[endpoint];
+  const holes = structuredClone(game.holes);
+  holes[sourceHoleId].occupant = null;
+  holes[destinationHoleId].occupant = { ropeId, end: endpoint };
+
+  const ropes = structuredClone(game.ropes);
+  ropes.find((item) => item.id === ropeId).endpoints[endpoint] = destinationHoleId;
+
+  const crossedTargets = new Set(crossedTargetIds);
+  const released = [];
+  const interactions = game.interactions
+    .map((interaction) => {
+      if (interaction.actorRopeId !== ropeId || !crossedTargets.has(interaction.targetRopeId)) {
+        return structuredClone(interaction);
+      }
+      const turns = interaction.turns - 1;
+      released.push({
+        interactionId: interaction.id,
+        targetRopeId: interaction.targetRopeId,
+        remainingTurns: Math.max(0, turns),
+      });
+      return {
+        ...structuredClone(interaction),
+        turns,
+        kind: turns === 2 ? 'helix' : 'crossing',
+      };
+    })
+    .filter((interaction) => interaction.turns > 0);
+
+  return {
+    ...game,
+    holes,
+    ropes,
+    interactions,
+    moveCount: game.moveCount + 1,
+    lastMove: {
+      ropeId,
+      endpoint,
+      fromHoleId: sourceHoleId,
+      toHoleId: destinationHoleId,
+      released,
+    },
+  };
+}
+
+export function isRopeRemovable(game, ropeId) {
+  const rope = game.ropes.find((item) => item.id === ropeId);
+  if (!rope) return false;
+  const hasActiveKnot = game.interactions.some((interaction) => interaction.actorRopeId === ropeId);
+  if (hasActiveKnot) return false;
+  const highestOrder = Math.max(...game.ropes.map((item) => item.creationOrder));
+  return rope.creationOrder === highestOrder;
+}
+
+export function removeRope(game, ropeId) {
+  const rope = game.ropes.find((item) => item.id === ropeId);
+  if (!rope) throw new Error('找不到這條繩子。');
+  if (!isRopeRemovable(game, ropeId)) throw new Error('這條繩子尚未完全位於最上層。');
+
+  const holes = structuredClone(game.holes);
+  for (const hole of holes) {
+    if (hole.occupant?.ropeId === ropeId) hole.occupant = null;
+  }
+
+  return {
+    ...game,
+    holes,
+    ropes: game.ropes.filter((item) => item.id !== ropeId).map((item) => structuredClone(item)),
+    interactions: game.interactions
+      .filter((interaction) => interaction.actorRopeId !== ropeId && interaction.targetRopeId !== ropeId)
+      .map((interaction) => structuredClone(interaction)),
+    removedCount: game.removedCount + 1,
+    lastRemoval: { ropeId },
+  };
+}
+
+export function isGameComplete(game) {
+  return game.ropes.length === 0;
+}
+
+export function restartGame(game) {
+  return createGameState(game.initialPuzzle);
+}

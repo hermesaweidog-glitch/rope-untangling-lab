@@ -11,13 +11,13 @@
     <main id="app">
       <header class="topbar panel">
         <div class="brand">
-          <p class="eyebrow">ROPE UNTANGLING · PUZZLE AUTHOR</p>
-          <h1>繩結出題工房</h1>
+          <p id="mode-label" class="eyebrow">ROPE UNTANGLING · PUZZLE AUTHOR</p>
+          <h1 id="page-title">繩結出題工房</h1>
         </div>
         <div class="metrics" aria-live="polite">
-          <div><span>已放繩索</span><strong id="rope-count">0 / 10</strong></div>
-          <div><span>占用洞位</span><strong id="hole-count">0 / 22</strong></div>
-          <div><span>保留空洞</span><strong id="empty-count">22</strong></div>
+          <div><span id="rope-count-label">已放繩索</span><strong id="rope-count">0 / 10</strong></div>
+          <div><span id="hole-count-label">占用洞位</span><strong id="hole-count">0 / 22</strong></div>
+          <div><span id="empty-count-label">保留空洞</span><strong id="empty-count">22</strong></div>
         </div>
       </header>
 
@@ -45,6 +45,7 @@
             <button id="same-seed-button" class="secondary" type="button" disabled>重設同一題</button>
             <button id="clear-button" class="secondary" type="button">清空盤面</button>
             <button id="random-button" class="primary" type="button">✦ 隨機完整出題</button>
+            <button id="start-game-button" class="play-button" type="button" disabled>▶ 開始遊戲</button>
           </div>
           <p class="microcopy">新繩預設在最上層；點擊舊繩會建立局部穿越，通過節點後回到最上層。</p>
         </aside>
@@ -86,10 +87,21 @@
               <g id="rope-layer"></g>
               <g id="crossing-layer"></g>
               <g id="preview-layer"></g>
+              <g id="move-layer"></g>
               <g id="hole-layer"></g>
             </svg>
           </div>
           <div id="board-status" class="board-status">尚未放置繩索</div>
+          <div id="game-hud" class="game-hud" hidden>
+            <div>
+              <span class="game-kicker">CURRENT ACTION</span>
+              <strong id="game-instruction">點擊一個繩端，再點空洞移動</strong>
+            </div>
+            <div class="game-actions">
+              <button id="restart-game-button" type="button">↻ 重新開始</button>
+              <button id="back-editor-button" type="button">返回出題</button>
+            </div>
+          </div>
         </section>
 
         <aside class="inspector panel" aria-label="繩索配額檢查">
@@ -107,6 +119,18 @@
       </section>
 
       <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      <div id="victory" class="victory" hidden>
+        <div class="victory-card panel">
+          <span class="victory-icon">✓</span>
+          <p class="section-kicker">PUZZLE CLEARED</p>
+          <h2>所有繩子都取下了！</h2>
+          <p>你用了 <strong id="victory-moves">0</strong> 次移孔完成這一題。</p>
+          <div class="victory-actions">
+            <button id="victory-restart" class="secondary" type="button">再玩一次</button>
+            <button id="victory-editor" class="primary" type="button">返回出題</button>
+          </div>
+        </div>
+      </div>
     </main>
     <script type="module" src="/src/main.js"></script>
   </body>

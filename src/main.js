@@ -6,9 +6,14 @@ import {
   countActiveTurns,
   countPassiveHooks,
   createAuthoringState,
+  createGameState,
   finishRope,
-  generateRandomPuzzle,
   getEmptyHoles,
+  isGameComplete,
+  isRopeRemovable,
+  moveEndpoint,
+  removeRope,
+  restartGame,
   undo,
   validatePuzzle,
 } from './topology.js';
@@ -16,22 +21,31 @@ import {
   BOARD_CENTER,
   HOLE_HIT_RADIUS,
   buildPuzzleGeometry,
+  findCrossedTargets,
   holePoint,
   nearestHole,
   pathFromSamples,
   pointAndTangentAt,
   sampleCurve,
 } from './geometry.js';
+import { generatePlayablePuzzle, solvePuzzle } from './solver.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const board = document.querySelector('#board');
+const boardShell = document.querySelector('.board-shell');
 const ropeLayer = document.querySelector('#rope-layer');
 const crossingLayer = document.querySelector('#crossing-layer');
 const previewLayer = document.querySelector('#preview-layer');
+const moveLayer = document.querySelector('#move-layer');
 const holeLayer = document.querySelector('#hole-layer');
 const ropeCount = document.querySelector('#rope-count');
 const holeCount = document.querySelector('#hole-count');
 const emptyCount = document.querySelector('#empty-count');
+const ropeCountLabel = document.querySelector('#rope-count-label');
+const holeCountLabel = document.querySelector('#hole-count-label');
+const emptyCountLabel = document.querySelector('#empty-count-label');
+const modeLabel = document.querySelector('#mode-label');
+const pageTitle = document.querySelector('#page-title');
 const currentRope = document.querySelector('#current-rope');
 const instruction = document.querySelector('#instruction');
 const activeQuota = document.querySelector('#active-quota');
@@ -39,12 +53,21 @@ const undoButton = document.querySelector('#undo-button');
 const sameSeedButton = document.querySelector('#same-seed-button');
 const clearButton = document.querySelector('#clear-button');
 const randomButton = document.querySelector('#random-button');
+const startGameButton = document.querySelector('#start-game-button');
+const restartGameButton = document.querySelector('#restart-game-button');
+const backEditorButton = document.querySelector('#back-editor-button');
 const ropeRoster = document.querySelector('#rope-roster');
 const interactionList = document.querySelector('#interaction-list');
 const interactionCount = document.querySelector('#interaction-count');
 const validationPill = document.querySelector('#validation-pill');
 const boardStatus = document.querySelector('#board-status');
 const seedValue = document.querySelector('#seed-value');
+const gameHud = document.querySelector('#game-hud');
+const gameInstruction = document.querySelector('#game-instruction');
+const victory = document.querySelector('#victory');
+const victoryMoves = document.querySelector('#victory-moves');
+const victoryRestart = document.querySelector('#victory-restart');
+const victoryEditor = document.querySelector('#victory-editor');
 const toast = document.querySelector('#toast');
 const steps = {
   start: document.querySelector('#step-start'),
@@ -53,9 +76,14 @@ const steps = {
 };
 
 let state = createAuthoringState();
+let authoringSnapshot = null;
+let mode = 'author';
+let selectedEndpoint = null;
 let previewPoint = null;
+let moveFlash = null;
 let toastTimer = null;
 let previewFrame = null;
+let moveFlashTimer = null;
 
 function svgElement(tag, attributes = {}, text = '') {
   const element = document.createElementNS(SVG_NS, tag);
@@ -70,11 +98,17 @@ function ropeDefinition(id) {
   return ROPE_DEFS.find((rope) => rope.id === id);
 }
 
+function focusedGameRopeId() {
+  if (mode !== 'game') return null;
+  if (selectedEndpoint) return selectedEndpoint.ropeId;
+  return [...state.ropes].sort((a, b) => b.creationOrder - a.creationOrder)[0]?.id ?? null;
+}
+
 function notify(message) {
   toast.textContent = message;
   toast.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove('show'), 2100);
+  toastTimer = setTimeout(() => toast.classList.remove('show'), 2300);
 }
 
 function boardPointFromEvent(event) {
@@ -93,41 +127,70 @@ function lineAround(point, tangent, halfLength = 31) {
   };
 }
 
+function requestAuthorWrap(event, rope) {
+  event.stopPropagation();
+  if (!state.draft) {
+    notify('請先點擊空洞，開始放置新繩。');
+    return;
+  }
+  try {
+    state = addWrap(state, rope.id);
+    const turns = state.draft.wraps.find((wrap) => wrap.targetRopeId === rope.id).turns;
+    notify(`${ropeDefinition(state.draft.ropeId).name}纏繞${rope.name}${turns === 2 ? '第二圈' : ''}`);
+    renderAll();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+function requestGameRope(event, rope) {
+  event.stopPropagation();
+  if (!isRopeRemovable(state, rope.id)) {
+    const active = state.interactions
+      .filter((interaction) => interaction.actorRopeId === rope.id)
+      .reduce((sum, interaction) => sum + interaction.turns, 0);
+    notify(active > 0 ? `${rope.name}還有 ${active} 圈纏繞未解開` : `${rope.name}上方還有其他繩子`);
+    return;
+  }
+  state = removeRope(state, rope.id);
+  selectedEndpoint = null;
+  notify(`已取下${rope.name} · 還剩 ${state.ropes.length} 條`);
+  renderAll();
+  if (isGameComplete(state)) showVictory();
+}
+
 function drawCommittedRopes(geometry) {
   ropeLayer.replaceChildren();
   for (const rope of [...state.ropes].sort((a, b) => a.creationOrder - b.creationOrder)) {
     const data = geometry.ropes.get(rope.id);
-    const group = svgElement('g', { class: 'rope-group', 'data-rope-id': rope.id });
+    if (!data) continue;
+    const removable = mode === 'game' && isRopeRemovable(state, rope.id);
+    const selected = mode === 'game' && selectedEndpoint?.ropeId === rope.id;
+    const dimmed = mode === 'game' && focusedGameRopeId() !== rope.id;
+    const group = svgElement('g', {
+      class: `rope-group${removable ? ' removable' : ''}${selected ? ' selected-rope' : ''}${dimmed ? ' dimmed-rope' : ''}`,
+      'data-rope-id': rope.id,
+    });
+    if (removable) {
+      group.append(svgElement('path', { class: 'rope-ready-glow', d: data.path, stroke: rope.color }));
+    }
     group.append(
       svgElement('path', { class: 'rope-shadow', d: data.path }),
       svgElement('path', { class: 'rope-body', d: data.path, stroke: rope.color }),
       svgElement('path', { class: 'rope-shine', d: data.path }),
     );
     const hit = svgElement('path', {
-      class: 'rope-hit',
+      class: `rope-hit${mode === 'game' ? ' game-rope-hit' : ''}`,
       d: data.path,
       tabindex: '0',
       role: 'button',
-      'aria-label': `纏繞 ${rope.name}`,
+      'aria-label': removable ? `取下${rope.name}` : mode === 'game' ? `${rope.name}尚不可取下` : `纏繞${rope.name}`,
       'data-rope-id': rope.id,
     });
-    const requestWrap = (event) => {
-      event.stopPropagation();
-      if (!state.draft) {
-        notify('請先點擊空洞，開始放置新繩。');
-        return;
-      }
-      try {
-        state = addWrap(state, rope.id);
-        notify(`${ropeDefinition(state.draft.ropeId).name}纏繞${rope.name}${state.draft.wraps.find((wrap) => wrap.targetRopeId === rope.id).turns === 2 ? '第二圈' : ''}`);
-        renderAll();
-      } catch (error) {
-        notify(error.message);
-      }
-    };
-    hit.addEventListener('click', requestWrap);
+    const action = (event) => mode === 'game' ? requestGameRope(event, rope) : requestAuthorWrap(event, rope);
+    hit.addEventListener('click', action);
     hit.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') requestWrap(event);
+      if (event.key === 'Enter' || event.key === ' ') action(event);
     });
     group.append(hit);
     ropeLayer.append(group);
@@ -141,23 +204,20 @@ function drawInteractionNodes(geometry) {
     const target = ropeDefinition(interaction.targetRopeId);
     const line = lineAround(interaction.point, interaction.tangent);
     const angle = Math.atan2(interaction.tangent.y, interaction.tangent.x) * 180 / Math.PI;
-    const group = svgElement('g', { class: 'interaction-node', 'data-interaction-id': interaction.id });
-
+    const focused = mode === 'game' && focusedGameRopeId() === interaction.actorRopeId;
+    const group = svgElement('g', {
+      class: `interaction-node${mode === 'game' ? ' game-node' : ''}${focused ? ' focused' : ''}`,
+      'data-interaction-id': interaction.id,
+    });
     const loopOffsets = interaction.turns === 2 ? [-13, 13] : [0];
     for (const offset of loopOffsets) {
       const cx = interaction.point.x + interaction.tangent.x * offset;
       const cy = interaction.point.y + interaction.tangent.y * offset;
       group.append(svgElement('ellipse', {
-        class: 'helix-loop',
-        cx,
-        cy,
-        rx: 15,
-        ry: 27,
-        stroke: actor.color,
+        class: 'helix-loop', cx, cy, rx: 15, ry: 27, stroke: actor.color,
         transform: `rotate(${angle} ${cx} ${cy})`,
       }));
     }
-
     group.append(
       svgElement('line', { class: 'local-mask', ...line }),
       svgElement('line', { class: 'local-target-shadow', ...line }),
@@ -183,49 +243,101 @@ function draftWaypoints(geometry, endPoint) {
 
 function drawPreview(geometry) {
   previewLayer.replaceChildren();
-  if (!state.draft) return;
+  if (mode !== 'author' || !state.draft) return;
   const definition = ropeDefinition(state.draft.ropeId);
-  const points = draftWaypoints(geometry, previewPoint);
-  const samples = sampleCurve(points);
-  previewLayer.append(svgElement('path', {
-    class: 'preview-rope',
-    d: pathFromSamples(samples),
-    stroke: definition.color,
-  }));
+  const samples = sampleCurve(draftWaypoints(geometry, previewPoint));
+  previewLayer.append(svgElement('path', { class: 'preview-rope', d: pathFromSamples(samples), stroke: definition.color }));
   for (const wrap of state.draft.wraps) {
     const target = geometry.ropes.get(wrap.targetRopeId);
     if (!target) continue;
     const hook = pointAndTangentAt(target.samples, wrap.targetT);
     previewLayer.append(
-      svgElement('circle', {
-        class: 'preview-node',
-        cx: hook.point.x,
-        cy: hook.point.y,
-        r: wrap.turns === 2 ? 25 : 18,
-        stroke: definition.color,
-      }),
+      svgElement('circle', { class: 'preview-node', cx: hook.point.x, cy: hook.point.y, r: wrap.turns === 2 ? 25 : 18, stroke: definition.color }),
       svgElement('text', { class: 'node-label', x: hook.point.x, y: hook.point.y + 1 }, `×${wrap.turns}`),
     );
   }
 }
 
-function handleHole(holeId) {
-  try {
-    if (state.holes[holeId].occupant) {
-      notify(`洞位 ${holeId + 1} 已被占用。`);
-      return;
-    }
-    if (!state.draft) {
-      state = beginRope(state, holeId);
-      previewPoint = holePoint(holeId);
-      notify(`已選洞位 ${holeId + 1} 為起點`);
+function drawMoveFlash() {
+  moveLayer.replaceChildren();
+  if (!moveFlash) return;
+  const from = holePoint(moveFlash.fromHoleId);
+  const to = holePoint(moveFlash.toHoleId);
+  moveLayer.append(
+    svgElement('line', { class: 'move-sweep-shadow', x1: from.x, y1: from.y, x2: to.x, y2: to.y }),
+    svgElement('line', { class: 'move-sweep', x1: from.x, y1: from.y, x2: to.x, y2: to.y, stroke: moveFlash.color }),
+  );
+}
+
+function handleAuthorHole(holeId) {
+  if (state.holes[holeId].occupant) {
+    notify(`洞位 ${holeId + 1} 已被占用。`);
+    return;
+  }
+  if (!state.draft) {
+    state = beginRope(state, holeId);
+    previewPoint = holePoint(holeId);
+    notify(`已選洞位 ${holeId + 1} 為起點`);
+  } else {
+    const name = ropeDefinition(state.draft.ropeId).name;
+    state = finishRope(state, holeId);
+    previewPoint = null;
+    notify(`${name}已完成；原有繩索 ${state.ropes.length} 條`);
+  }
+  renderAll();
+}
+
+function handleGameHole(holeId) {
+  const occupant = state.holes[holeId].occupant;
+  if (occupant) {
+    if (selectedEndpoint?.ropeId === occupant.ropeId && selectedEndpoint?.endpoint === occupant.end) {
+      selectedEndpoint = null;
+      notify('已取消選擇繩端');
     } else {
-      const name = ropeDefinition(state.draft.ropeId).name;
-      state = finishRope(state, holeId);
-      previewPoint = null;
-      notify(`${name}已完成；原有繩索 ${state.ropes.length} 條`);
+      selectedEndpoint = { ropeId: occupant.ropeId, endpoint: occupant.end };
+      notify(`已選${ropeDefinition(occupant.ropeId).name} ${occupant.end} 端 · 請點空洞`);
     }
     renderAll();
+    return;
+  }
+  if (!selectedEndpoint) {
+    notify('請先點擊一個彩色繩端');
+    return;
+  }
+
+  const rope = state.ropes.find((item) => item.id === selectedEndpoint.ropeId);
+  if (!rope) return;
+  const fromHoleId = rope.endpoints[selectedEndpoint.endpoint];
+  const crossedTargets = findCrossedTargets(state, rope.id, fromHoleId, holeId);
+  state = moveEndpoint(state, rope.id, selectedEndpoint.endpoint, holeId, crossedTargets);
+  moveFlash = { fromHoleId, toHoleId: holeId, color: rope.color };
+  const released = state.lastMove.released;
+  selectedEndpoint = null;
+  renderAll();
+
+  clearTimeout(moveFlashTimer);
+  moveFlashTimer = setTimeout(() => {
+    moveFlash = null;
+    drawMoveFlash();
+  }, 620);
+
+  if (released.length) {
+    const opened = released.map((item) => {
+      const target = ropeDefinition(item.targetRopeId).name;
+      return item.remainingTurns ? `${target}剩 ${item.remainingTurns} 圈` : `${target}已解開`;
+    }).join('、');
+    notify(`越過纏繞：${opened}`);
+  } else if (isRopeRemovable(state, rope.id)) {
+    notify(`${rope.name}已完全在最上層，點擊發光繩身取下`);
+  } else {
+    notify('移孔完成；這次沒有越過可解除的纏繞');
+  }
+}
+
+function handleHole(holeId) {
+  try {
+    if (mode === 'game') handleGameHole(holeId);
+    else handleAuthorHole(holeId);
   } catch (error) {
     notify(error.message);
   }
@@ -236,12 +348,12 @@ function drawHoles() {
   for (const hole of state.holes) {
     const point = holePoint(hole.id);
     const occupant = hole.occupant;
+    const selected = mode === 'game' && occupant && selectedEndpoint?.ropeId === occupant.ropeId && selectedEndpoint?.endpoint === occupant.end;
+    const available = mode === 'game' && !occupant && selectedEndpoint;
     const group = svgElement('g', {
-      class: `hole ${occupant ? 'occupied' : 'empty'}${state.draft?.startHole === hole.id ? ' selected' : ''}`,
-      transform: `translate(${point.x} ${point.y})`,
-      tabindex: '0',
-      role: 'button',
-      'aria-label': occupant ? `洞位 ${hole.id + 1}，已被${ropeDefinition(occupant.ropeId).name}占用` : `空洞 ${hole.id + 1}`,
+      class: `hole ${occupant ? 'occupied' : 'empty'}${state.draft?.startHole === hole.id || selected ? ' selected' : ''}${available ? ' available' : ''}${mode === 'game' && occupant ? ' game-endpoint' : ''}`,
+      transform: `translate(${point.x} ${point.y})`, tabindex: '0', role: 'button',
+      'aria-label': occupant ? `洞位 ${hole.id + 1}，${ropeDefinition(occupant.ropeId).name} ${occupant.end} 端` : `空洞 ${hole.id + 1}`,
       'data-hole-id': hole.id,
     });
     group.append(
@@ -275,15 +387,12 @@ function drawHoles() {
 
 function renderGuide() {
   const definition = state.nextRopeIndex < ROPE_DEFS.length ? ROPE_DEFS[state.nextRopeIndex] : null;
-  if (definition) {
-    currentRope.innerHTML = `<i class="rope-swatch" style="--rope:${definition.color}"></i><div><strong>${definition.name}</strong><small>第 ${state.nextRopeIndex + 1}／10 條</small></div>`;
-  } else {
-    currentRope.innerHTML = '<div><strong>十條繩都已完成</strong><small>盤面保留兩個空洞</small></div>';
-  }
-
+  currentRope.innerHTML = definition
+    ? `<i class="rope-swatch" style="--rope:${definition.color}"></i><div><strong>${definition.name}</strong><small>第 ${state.nextRopeIndex + 1}／10 條</small></div>`
+    : '<div><strong>十條繩都已完成</strong><small>盤面保留兩個空洞</small></div>';
   Object.values(steps).forEach((step) => step.classList.remove('active'));
   if (state.ropes.length === 10) {
-    instruction.textContent = '出題完成。可檢查右側配額，或產生另一個隨機繩結。';
+    instruction.textContent = '出題完成。按「開始遊戲」即可實際驗證這個繩結。';
   } else if (!state.draft) {
     steps.start.classList.add('active');
     instruction.textContent = '點擊任一空洞作為新繩的起點。';
@@ -293,19 +402,21 @@ function renderGuide() {
     const remaining = 2 - countActiveTurns(state, state.draft.ropeId);
     instruction.textContent = `可點擊既有繩索加入纏繞（還可 ${remaining} 次），或直接點另一個空洞完成。`;
   }
-
   activeQuota.textContent = state.draft ? `${countActiveTurns(state, state.draft.ropeId)} / 2` : '0 / 2';
   undoButton.disabled = state.history.length === 0;
   sameSeedButton.disabled = state.seed === null;
+  startGameButton.disabled = state.ropes.length !== 10 || !validatePuzzle(state).valid;
 }
 
-function renderMetricsAndValidation() {
+function renderAuthorMetrics() {
   const empty = getEmptyHoles(state).length;
+  ropeCountLabel.textContent = '已放繩索';
+  holeCountLabel.textContent = '占用洞位';
+  emptyCountLabel.textContent = '保留空洞';
   ropeCount.textContent = `${state.ropes.length} / 10`;
   holeCount.textContent = `${22 - empty} / 22`;
   emptyCount.textContent = String(empty);
   seedValue.textContent = state.seed === null ? '手動' : String(state.seed);
-
   const validation = validatePuzzle(state);
   if (state.ropes.length < 10) {
     validationPill.className = 'validation-pill idle';
@@ -315,12 +426,42 @@ function renderMetricsAndValidation() {
       : `已完成 ${state.ropes.length} 條 · 還需 ${10 - state.ropes.length} 條`;
   } else if (validation.valid) {
     validationPill.className = 'validation-pill valid';
-    validationPill.textContent = '規則通過';
+    validationPill.textContent = '可開始遊戲';
     boardStatus.textContent = `出題完成 · 20 個端點已固定 · 保留 ${empty} 個空洞`;
   } else {
     validationPill.className = 'validation-pill invalid';
     validationPill.textContent = '規則錯誤';
     boardStatus.textContent = validation.errors[0];
+  }
+}
+
+function renderGameMetrics() {
+  const remainingTurns = state.interactions.reduce((sum, interaction) => sum + interaction.turns, 0);
+  ropeCountLabel.textContent = '剩餘繩索';
+  holeCountLabel.textContent = '移孔次數';
+  emptyCountLabel.textContent = '未解圈數';
+  ropeCount.textContent = `${state.ropes.length} / 10`;
+  holeCount.textContent = String(state.moveCount);
+  emptyCount.textContent = String(remainingTurns);
+
+  const highest = [...state.ropes].sort((a, b) => b.creationOrder - a.creationOrder)[0];
+  if (!highest) {
+    gameInstruction.textContent = '所有繩子都已取下';
+    boardStatus.textContent = '遊戲完成';
+  } else if (selectedEndpoint) {
+    const rope = ropeDefinition(selectedEndpoint.ropeId);
+    const endpointHole = state.ropes.find((item) => item.id === selectedEndpoint.ropeId)?.endpoints[selectedEndpoint.endpoint];
+    gameInstruction.textContent = `已選${rope.name} ${selectedEndpoint.endpoint} 端（洞 ${endpointHole + 1}）· 點一個發光空洞`;
+    boardStatus.textContent = '移動只會解除既有纏繞，不會產生新的交纏';
+  } else if (isRopeRemovable(state, highest.id)) {
+    gameInstruction.textContent = `${highest.name}已完全在最上層 · 點擊發光繩身取下`;
+    boardStatus.textContent = '發光繩索現在可以從盤面取下';
+  } else {
+    const turns = state.interactions
+      .filter((interaction) => interaction.actorRopeId === highest.id)
+      .reduce((sum, interaction) => sum + interaction.turns, 0);
+    gameInstruction.textContent = `先解開${highest.name}的 ${turns} 圈纏繞：點繩端，再點跨過目標繩的空洞`;
+    boardStatus.textContent = '雙圈螺旋需要用繩端越過同一條目標繩兩次';
   }
 }
 
@@ -334,11 +475,7 @@ function renderRoster() {
     const row = document.createElement('div');
     row.className = `roster-row${current ? ' current' : ''}`;
     row.style.setProperty('--rope', definition.color);
-    row.innerHTML = `
-      <i class="roster-swatch"></i>
-      <div><strong>${definition.name}</strong><small>${placed ? '已固定兩端' : current ? '正在建立' : '尚未放置'}</small></div>
-      <div class="roster-quota">主 ${active}/2<br>被 ${passive}/3</div>
-    `;
+    row.innerHTML = `<i class="roster-swatch"></i><div><strong>${definition.name}</strong><small>${placed ? '已固定兩端' : current ? '正在建立' : '尚未放置'}</small></div><div class="roster-quota">主 ${active}/2<br>被 ${passive}/3</div>`;
     ropeRoster.append(row);
   }
 }
@@ -353,12 +490,7 @@ function renderInteractions() {
   interactionCount.textContent = String(state.interactions.length + (state.draft?.wraps.length ?? 0));
   interactionList.replaceChildren();
   const committed = state.interactions.map((interaction) => ({ ...interaction, draft: false }));
-  const drafts = (state.draft?.wraps ?? []).map((wrap, index) => ({
-    id: `draft-${index}`,
-    actorRopeId: state.draft.ropeId,
-    ...wrap,
-    draft: true,
-  }));
+  const drafts = (state.draft?.wraps ?? []).map((wrap, index) => ({ id: `draft-${index}`, actorRopeId: state.draft.ropeId, ...wrap, draft: true }));
   const items = [...committed, ...drafts];
   if (!items.length) {
     const empty = document.createElement('p');
@@ -376,20 +508,89 @@ function renderInteractions() {
   }
 }
 
+function fitBoardToViewport() {
+  if (mode !== 'game') {
+    board.style.removeProperty('width');
+    board.style.removeProperty('height');
+    return;
+  }
+  const widthLimit = boardShell.clientWidth * (window.innerWidth <= 760 ? 1.14 : 1);
+  const heightLimit = boardShell.clientHeight;
+  const fittedWidth = Math.min(widthLimit, heightLimit * (1000 / 760));
+  board.style.width = `${Math.max(320, fittedWidth)}px`;
+  board.style.height = 'auto';
+}
+
 function renderAll() {
+  document.body.classList.toggle('game-mode', mode === 'game');
+  fitBoardToViewport();
+  modeLabel.textContent = mode === 'game' ? 'ROPE UNTANGLING · PLAY MODE' : 'ROPE UNTANGLING · PUZZLE AUTHOR';
+  pageTitle.textContent = mode === 'game' ? '繩結解謎' : '繩結出題工房';
+  gameHud.hidden = mode !== 'game';
   const geometry = buildPuzzleGeometry(state);
   drawCommittedRopes(geometry);
   drawInteractionNodes(geometry);
   drawPreview(geometry);
+  drawMoveFlash();
   drawHoles();
-  renderGuide();
-  renderMetricsAndValidation();
-  renderRoster();
-  renderInteractions();
+  if (mode === 'author') {
+    renderGuide();
+    renderAuthorMetrics();
+    renderRoster();
+    renderInteractions();
+  } else {
+    renderGameMetrics();
+  }
+}
+
+function startGame() {
+  if (state.ropes.length !== 10 || !validatePuzzle(state).valid) {
+    notify('請先完成十條繩子的出題');
+    return;
+  }
+  const solution = solvePuzzle(state);
+  if (!solution.solvable) {
+    notify('這個題目在目前移孔規則下找不到完整解，請調整纏繞或重新出題');
+    return;
+  }
+  authoringSnapshot = structuredClone(state);
+  state = createGameState(state);
+  mode = 'game';
+  selectedEndpoint = null;
+  moveFlash = null;
+  victory.hidden = true;
+  renderAll();
+  notify('遊戲開始：點繩端，再點空洞移動');
+}
+
+function restartCurrentGame() {
+  if (mode !== 'game') return;
+  state = restartGame(state);
+  selectedEndpoint = null;
+  moveFlash = null;
+  victory.hidden = true;
+  renderAll();
+  notify('已回到這一題的初始狀態');
+}
+
+function returnToEditor() {
+  if (!authoringSnapshot) return;
+  state = structuredClone(authoringSnapshot);
+  mode = 'author';
+  selectedEndpoint = null;
+  moveFlash = null;
+  victory.hidden = true;
+  renderAll();
+  notify('已返回出題模式');
+}
+
+function showVictory() {
+  victoryMoves.textContent = String(state.moveCount);
+  victory.hidden = false;
 }
 
 board.addEventListener('pointermove', (event) => {
-  if (!state.draft) return;
+  if (mode !== 'author' || !state.draft) return;
   previewPoint = boardPointFromEvent(event);
   if (previewFrame) return;
   previewFrame = requestAnimationFrame(() => {
@@ -419,24 +620,33 @@ clearButton.addEventListener('click', () => {
 });
 
 randomButton.addEventListener('click', () => {
-  const seed = Date.now() >>> 0;
-  state = generateRandomPuzzle(seed);
+  const requestedSeed = Date.now() >>> 0;
+  state = generatePlayablePuzzle(requestedSeed);
   previewPoint = null;
   renderAll();
-  notify(`已產生完整題目 · seed ${seed}`);
+  const skipped = state.seed === requestedSeed ? '' : ` · 跳過 ${state.seed - requestedSeed} 個無解 seed`;
+  notify(`已產生可解完整題目 · seed ${state.seed}${skipped}`);
 });
 
 sameSeedButton.addEventListener('click', () => {
   if (state.seed === null) return;
-  state = generateRandomPuzzle(state.seed);
+  state = generatePlayablePuzzle(state.seed);
   previewPoint = null;
   renderAll();
-  notify(`已重設 seed ${state.seed}`);
+  notify(`已重設可解 seed ${state.seed}`);
 });
 
+startGameButton.addEventListener('click', startGame);
+restartGameButton.addEventListener('click', restartCurrentGame);
+backEditorButton.addEventListener('click', returnToEditor);
+victoryRestart.addEventListener('click', restartCurrentGame);
+victoryEditor.addEventListener('click', returnToEditor);
+window.addEventListener('resize', fitBoardToViewport);
+
 window.ropeAuthorDebug = {
+  getMode: () => mode,
   getState: () => structuredClone(state),
-  validate: () => validatePuzzle(state),
+  validate: () => mode === 'author' ? validatePuzzle(state) : { valid: true, errors: [] },
   geometry: () => buildPuzzleGeometry(state),
   clickHole: handleHole,
   wrap: (targetRopeId) => {
@@ -445,9 +655,40 @@ window.ropeAuthorDebug = {
     return structuredClone(state);
   },
   random: (seed = 20260715) => {
-    state = generateRandomPuzzle(seed);
+    if (mode === 'game') return structuredClone(state);
+    state = generatePlayablePuzzle(seed);
     previewPoint = null;
     renderAll();
+    return structuredClone(state);
+  },
+  startGame: () => {
+    startGame();
+    return structuredClone(state);
+  },
+  selectEndpoint: (ropeId, endpoint) => {
+    const rope = state.ropes.find((item) => item.id === ropeId);
+    if (!rope) throw new Error('找不到繩子');
+    handleGameHole(rope.endpoints[endpoint]);
+    return structuredClone(selectedEndpoint);
+  },
+  crossings: (ropeId, endpoint, toHoleId) => {
+    const rope = state.ropes.find((item) => item.id === ropeId);
+    if (!rope) throw new Error('找不到繩子');
+    return findCrossedTargets(state, ropeId, rope.endpoints[endpoint], toHoleId);
+  },
+  moveTo: (holeId) => {
+    handleGameHole(holeId);
+    return structuredClone(state);
+  },
+  remove: (ropeId) => {
+    state = removeRope(state, ropeId);
+    selectedEndpoint = null;
+    renderAll();
+    if (isGameComplete(state)) showVictory();
+    return structuredClone(state);
+  },
+  restartGame: () => {
+    restartCurrentGame();
     return structuredClone(state);
   },
   clear: () => clearButton.click(),

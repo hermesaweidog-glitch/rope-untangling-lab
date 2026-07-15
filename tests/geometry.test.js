@@ -6,6 +6,7 @@ import {
   BOARD_RADIUS,
   HOLE_HIT_RADIUS,
   buildPuzzleGeometry,
+  findCrossedTargets,
   holePoint,
   nearestHole,
   pointAndTangentAt,
@@ -32,6 +33,17 @@ test('overlapping mobile hit zones resolve to the geometrically nearest hole', (
   const nearHoleOne = { x: holeOne.x + 5, y: holeOne.y + 4 };
   assert.equal(nearestHole(nearHoleOne)?.id, 0);
   assert.equal(nearestHole(BOARD_CENTER), null);
+});
+
+test('endpoint movement detects only active target ropes crossed by its travel line', () => {
+  let state = createAuthoringState();
+  state = finishRope(beginRope(state, 0), 11);
+  state = beginRope(state, 5);
+  state = addWrap(state, 'rope-1');
+  state = finishRope(state, 16);
+
+  assert.deepEqual(findCrossedTargets(state, 'rope-2', 5, 17), ['rope-1']);
+  assert.deepEqual(findCrossedTargets(state, 'rope-2', 5, 6), []);
 });
 
 test('actor geometry passes through the target fixed hook point', () => {
