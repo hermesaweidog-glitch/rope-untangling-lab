@@ -326,7 +326,8 @@ export function moveEndpoint(game, ropeId, endpoint, destinationHoleId) {
     (item.actorRopeId === ropeId && item.targetRopeId === targetRopeId)
       || (item.targetRopeId === ropeId && item.actorRopeId === targetRopeId)
   ));
-  const effectiveContact = contacts.find((contact) => relationFor(contact.targetRopeId) || hasLayerDifference) ?? null;
+  const relatedContact = contacts.find((contact) => relationFor(contact.targetRopeId)) ?? null;
+  const effectiveContact = relatedContact ?? (hasLayerDifference ? contacts[0] ?? null : null);
   const existingRelation = effectiveContact ? relationFor(effectiveContact.targetRopeId) : null;
 
   const holes = structuredClone(game.holes);

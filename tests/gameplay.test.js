@@ -12,6 +12,7 @@ import {
   removeRope,
   restartGame,
 } from '../src/topology.js';
+import { buildPuzzleGeometry, holePoint } from '../src/geometry.js';
 
 function placeRope(state, start, end) {
   return finishRope(beginRope(state, start), end);
@@ -152,4 +153,40 @@ test('a layered moving rope knots only with the first effective contact along it
   assert.equal(game.interactions.length, 1);
   assert.equal(game.interactions[0].actorRopeId, 'rope-2');
   assert.equal(game.interactions[0].targetRopeId, 'rope-3');
+});
+
+function makeIndigoLimePuzzle() {
+  // Exact endpoint layout from the reported board, converted from 1-based labels.
+  const pairs = [
+    [0, 11], [13, 17], [9, 16], [4, 6], [7, 14],
+    [15, 20], [18, 19], [1, 8], [5, 21],
+  ];
+  let puzzle = createAuthoringState();
+  for (const [start, end] of pairs) puzzle = placeRope(puzzle, start, end);
+  puzzle = beginRope(puzzle, 12); // Indigo starts at hole 13.
+  puzzle = addUnderpass(puzzle, 'rope-9', 0.5);
+  puzzle = finishRope(puzzle, 10); // Indigo ends at hole 11.
+  return createGameState(puzzle);
+}
+
+test('moving indigo from hole 11 to 4 or 3 releases its existing lime knot before unrelated contacts', () => {
+  for (const destination of [3, 2]) {
+    const moved = moveEndpoint(makeIndigoLimePuzzle(), 'rope-10', 'B', destination);
+    const indigoRelations = moved.interactions.filter((item) => (
+      item.actorRopeId === 'rope-10' || item.targetRopeId === 'rope-10'
+    ));
+
+    assert.equal(indigoRelations.length, 0);
+    assert.deepEqual(moved.lastMove.released.map((item) => item.targetRopeId), ['rope-9']);
+    assert.equal(moved.lastMove.created.length, 0);
+
+    const samples = buildPuzzleGeometry(moved).ropes.get('rope-10').samples;
+    const curveLength = samples.slice(1).reduce((total, point, index) => (
+      total + Math.hypot(point.x - samples[index].x, point.y - samples[index].y)
+    ), 0);
+    const start = holePoint(12);
+    const end = holePoint(destination);
+    const directLength = Math.hypot(end.x - start.x, end.y - start.y);
+    assert.ok(curveLength < directLength * 1.2);
+  }
 });
