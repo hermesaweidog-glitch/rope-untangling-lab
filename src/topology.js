@@ -1,5 +1,5 @@
 import { HOLE_COUNT } from './constants.js';
-import { resolveDraftInteractions } from './geometry.js';
+import { findMovementContacts, resolveDraftInteractions } from './geometry.js';
 
 export { HOLE_COUNT };
 export const MAX_ROPES = 10;
@@ -54,6 +54,7 @@ export function createAuthoringState({ seed = null } = {}) {
       occupant: null,
     })),
     ropes: [],
+    crossings: [],
     interactions: [],
     draft: null,
     nextRopeIndex: 0,
@@ -70,12 +71,16 @@ export function countUnderpassClicks(state, ropeId) {
   let total = state.interactions
     .filter((interaction) => interaction.actorRopeId === ropeId)
     .reduce((sum, interaction) => sum + (interaction.clicks ?? interaction.turns), 0);
+  total += (state.crossings ?? [])
+    .filter((crossing) => crossing.actorRopeId === ropeId)
+    .reduce((sum, crossing) => sum + (crossing.clicks ?? 1), 0);
   if (state.draft?.ropeId === ropeId) total += state.draft.wraps.length;
   return total;
 }
 
 export function countPassiveHooks(state, ropeId) {
-  const committedTargets = state.interactions.filter((interaction) => interaction.targetRopeId === ropeId).length;
+  const committedTargets = state.interactions.filter((interaction) => interaction.targetRopeId === ropeId).length
+    + (state.crossings ?? []).filter((crossing) => crossing.targetRopeId === ropeId).length;
   if (!state.draft) return committedTargets;
   const draftTargets = new Set(
     state.draft.wraps
@@ -154,7 +159,19 @@ export function finishRope(state, endHoleId) {
     creationOrder: state.nextRopeIndex,
     endpoints: { A: startHole, B: endHoleId },
   };
-  const resolvedInteractions = resolveDraftInteractions(state, endHoleId);
+  const resolvedTopology = resolveDraftInteractions(state, endHoleId);
+  const resolvedCrossings = resolvedTopology.filter((item) => item.twists === 0);
+  const resolvedInteractions = resolvedTopology.filter((item) => item.twists > 0);
+  const crossings = resolvedCrossings.map((crossing, index) => ({
+    id: `crossing-${(state.crossings ?? []).length + index + 1}`,
+    actorRopeId: state.draft.ropeId,
+    targetRopeId: crossing.targetRopeId,
+    targetT: crossing.targetT,
+    clicks: crossing.clicks,
+    kind: 'underpass',
+    order: 'actor-under',
+    routeOrder: crossing.routeOrder,
+  }));
   const interactions = resolvedInteractions.map((interaction, index) => ({
     id: `interaction-${state.interactions.length + index + 1}`,
     actorRopeId: state.draft.ropeId,
@@ -165,6 +182,7 @@ export function finishRope(state, endHoleId) {
     ...state,
     holes,
     ropes: [...state.ropes, rope],
+    crossings: [...(state.crossings ?? []), ...crossings],
     interactions: [...state.interactions, ...interactions],
     draft: null,
     nextRopeIndex: state.nextRopeIndex + 1,
@@ -200,6 +218,9 @@ export function validatePuzzle(state) {
   for (const interaction of state.interactions) {
     if (!PASSIVE_SLOTS.includes(interaction.targetT)) errors.push(`${interaction.id} 使用無效節點。`);
     if (![1, 2].includes(interaction.turns)) errors.push(`${interaction.id} 圈數無效。`);
+  }
+  for (const crossing of state.crossings ?? []) {
+    if (!PASSIVE_SLOTS.includes(crossing.targetT)) errors.push(`${crossing.id} 使用無效視覺交點。`);
   }
 
   return { valid: errors.length === 0, errors };
@@ -265,6 +286,7 @@ function gamePuzzleSnapshot(state) {
   return {
     holes: structuredClone(state.holes),
     ropes: structuredClone(state.ropes),
+    crossings: structuredClone(state.crossings ?? []),
     interactions: structuredClone(state.interactions),
     seed: state.seed ?? null,
   };
@@ -282,13 +304,27 @@ export function createGameState(puzzleState) {
   };
 }
 
-export function moveEndpoint(game, ropeId, endpoint, destinationHoleId, crossedTargetIds = []) {
+export function moveEndpoint(game, ropeId, endpoint, destinationHoleId) {
   if (!['A', 'B'].includes(endpoint)) throw new Error('未知的繩端。');
   const rope = game.ropes.find((item) => item.id === ropeId);
   if (!rope) throw new Error('找不到這條繩子。');
   assertEmptyHole(game, destinationHoleId);
 
   const sourceHoleId = rope.endpoints[endpoint];
+  const contacts = findMovementContacts(game, ropeId, sourceHoleId, destinationHoleId);
+  const hasLayerDifference = (game.crossings ?? []).some((item) => (
+    (item.actorRopeId === ropeId && item.order === 'actor-under')
+      || (item.targetRopeId === ropeId && item.order === 'actor-over')
+  )) || game.interactions.some(
+    (item) => item.actorRopeId === ropeId || item.targetRopeId === ropeId,
+  );
+  const relationFor = (targetRopeId) => game.interactions.find((item) => (
+    (item.actorRopeId === ropeId && item.targetRopeId === targetRopeId)
+      || (item.targetRopeId === ropeId && item.actorRopeId === targetRopeId)
+  ));
+  const effectiveContact = contacts.find((contact) => relationFor(contact.targetRopeId) || hasLayerDifference) ?? null;
+  const existingRelation = effectiveContact ? relationFor(effectiveContact.targetRopeId) : null;
+
   const holes = structuredClone(game.holes);
   holes[sourceHoleId].occupant = null;
   holes[destinationHoleId].occupant = { ropeId, end: endpoint };
@@ -296,32 +332,71 @@ export function moveEndpoint(game, ropeId, endpoint, destinationHoleId, crossedT
   const ropes = structuredClone(game.ropes);
   ropes.find((item) => item.id === ropeId).endpoints[endpoint] = destinationHoleId;
 
-  const crossedTargets = new Set(crossedTargetIds);
   const released = [];
-  const interactions = game.interactions
-    .map((interaction) => {
-      if (interaction.actorRopeId !== ropeId || !crossedTargets.has(interaction.targetRopeId)) {
-        return structuredClone(interaction);
-      }
+  const created = [];
+  let interactions = game.interactions.map((interaction) => structuredClone(interaction));
+  let crossings = (game.crossings ?? []).map((crossing) => structuredClone(crossing));
+
+  if (existingRelation) {
+    interactions = interactions.flatMap((interaction) => {
+      if (interaction.id !== existingRelation.id) return [interaction];
       const turns = interaction.turns - 1;
       released.push({
         interactionId: interaction.id,
-        targetRopeId: interaction.targetRopeId,
+        targetRopeId: effectiveContact.targetRopeId,
         remainingTurns: Math.max(0, turns),
       });
-      return {
-        ...structuredClone(interaction),
-        turns,
-        twists: turns,
-        kind: turns === 2 ? 'helix' : 'twist',
-      };
-    })
-    .filter((interaction) => interaction.turns > 0);
+      if (turns <= 0) return [];
+      return [{ ...interaction, turns, twists: turns, kind: turns === 2 ? 'helix' : 'twist' }];
+    });
+  } else if (effectiveContact) {
+    const interaction = {
+      id: `interaction-game-${game.moveCount + 1}-${interactions.length + 1}`,
+      actorRopeId: ropeId,
+      targetRopeId: effectiveContact.targetRopeId,
+      targetT: effectiveContact.targetT,
+      turns: 1,
+      twists: 1,
+      kind: 'twist',
+      source: 'gameplay',
+      routeOrder: endpoint === 'A' ? -(game.moveCount + 1) : 1000 + game.moveCount + 1,
+      localOrder: { before: 'actor-top', atNode: 'actor-under', after: 'actor-top' },
+    };
+    interactions.push(interaction);
+    created.push({
+      interactionId: interaction.id,
+      targetRopeId: interaction.targetRopeId,
+      targetT: interaction.targetT,
+    });
+    crossings = crossings.filter((crossing) => !(
+      (crossing.actorRopeId === ropeId && crossing.targetRopeId === interaction.targetRopeId)
+        || (crossing.targetRopeId === ropeId && crossing.actorRopeId === interaction.targetRopeId)
+    ));
+  }
+
+  for (const contact of contacts) {
+    if (interactions.some((item) => (
+      (item.actorRopeId === ropeId && item.targetRopeId === contact.targetRopeId)
+        || (item.targetRopeId === ropeId && item.actorRopeId === contact.targetRopeId)
+    ))) continue;
+    if (crossings.some((item) => item.actorRopeId === ropeId && item.targetRopeId === contact.targetRopeId)) continue;
+    crossings.push({
+      id: `crossing-game-${game.moveCount + 1}-${crossings.length + 1}`,
+      actorRopeId: ropeId,
+      targetRopeId: contact.targetRopeId,
+      targetT: contact.targetT,
+      kind: 'overpass',
+      order: 'actor-over',
+      source: 'gameplay',
+      routeOrder: endpoint === 'A' ? -(game.moveCount + 1) : 1000 + game.moveCount + 1,
+    });
+  }
 
   return {
     ...game,
     holes,
     ropes,
+    crossings,
     interactions,
     moveCount: game.moveCount + 1,
     lastMove: {
@@ -329,7 +404,9 @@ export function moveEndpoint(game, ropeId, endpoint, destinationHoleId, crossedT
       endpoint,
       fromHoleId: sourceHoleId,
       toHoleId: destinationHoleId,
+      contacts,
       released,
+      created,
     },
   };
 }
@@ -337,10 +414,9 @@ export function moveEndpoint(game, ropeId, endpoint, destinationHoleId, crossedT
 export function isRopeRemovable(game, ropeId) {
   const rope = game.ropes.find((item) => item.id === ropeId);
   if (!rope) return false;
-  const hasActiveKnot = game.interactions.some((interaction) => interaction.actorRopeId === ropeId);
-  if (hasActiveKnot) return false;
-  const highestOrder = Math.max(...game.ropes.map((item) => item.creationOrder));
-  return rope.creationOrder === highestOrder;
+  return !game.interactions.some(
+    (interaction) => interaction.actorRopeId === ropeId || interaction.targetRopeId === ropeId,
+  );
 }
 
 export function removeRope(game, ropeId) {
@@ -357,6 +433,9 @@ export function removeRope(game, ropeId) {
     ...game,
     holes,
     ropes: game.ropes.filter((item) => item.id !== ropeId).map((item) => structuredClone(item)),
+    crossings: (game.crossings ?? [])
+      .filter((crossing) => crossing.actorRopeId !== ropeId && crossing.targetRopeId !== ropeId)
+      .map((crossing) => structuredClone(crossing)),
     interactions: game.interactions
       .filter((interaction) => interaction.actorRopeId !== ropeId && interaction.targetRopeId !== ropeId)
       .map((interaction) => structuredClone(interaction)),

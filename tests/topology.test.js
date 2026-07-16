@@ -70,32 +70,32 @@ function twistScenario(clicks, endHoleId) {
   state = placeRope(state, 0, 11);
   state = beginRope(state, 5);
   for (let index = 0; index < clicks; index += 1) state = addUnderpass(state, 'rope-1');
-  return finishRope(state, endHoleId).interactions[0];
+  return finishRope(state, endHoleId);
 }
 
-test('one underpass click ending on the opposite side is not a twist', () => {
-  const interaction = twistScenario(1, 17);
-  assert.equal(interaction.kind, 'underpass');
-  assert.equal(interaction.twists, 0);
-  assert.equal(interaction.turns, 1);
+test('one underpass click ending on the opposite side is visual only, with no topology relation', () => {
+  const state = twistScenario(1, 17);
+  assert.equal(state.interactions.length, 0);
+  assert.equal(state.crossings.length, 1);
+  assert.equal(state.crossings[0].kind, 'underpass');
 });
 
 test('one underpass click ending on the starting side resolves to one twist', () => {
-  const interaction = twistScenario(1, 6);
+  const interaction = twistScenario(1, 6).interactions[0];
   assert.equal(interaction.kind, 'twist');
   assert.equal(interaction.twists, 1);
   assert.equal(interaction.turns, 1);
 });
 
 test('two underpass clicks ending on the opposite side resolve to a double twist', () => {
-  const interaction = twistScenario(2, 17);
+  const interaction = twistScenario(2, 17).interactions[0];
   assert.equal(interaction.kind, 'helix');
   assert.equal(interaction.twists, 2);
   assert.equal(interaction.turns, 2);
 });
 
 test('two underpass clicks ending on the starting side resolve to one twist', () => {
-  const interaction = twistScenario(2, 6);
+  const interaction = twistScenario(2, 6).interactions[0];
   assert.equal(interaction.kind, 'twist');
   assert.equal(interaction.twists, 1);
   assert.equal(interaction.turns, 1);

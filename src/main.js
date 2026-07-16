@@ -21,7 +21,7 @@ import {
   BOARD_CENTER,
   HOLE_HIT_RADIUS,
   buildPuzzleGeometry,
-  findCrossedTargets,
+  findMovementContacts,
   holePoint,
   nearestHole,
   pathFromSamples,
@@ -100,8 +100,7 @@ function ropeDefinition(id) {
 
 function focusedGameRopeId() {
   if (mode !== 'game') return null;
-  if (selectedEndpoint) return selectedEndpoint.ropeId;
-  return [...state.ropes].sort((a, b) => b.creationOrder - a.creationOrder)[0]?.id ?? null;
+  return selectedEndpoint?.ropeId ?? null;
 }
 
 function notify(message) {
@@ -147,9 +146,9 @@ function requestGameRope(event, rope) {
   event.stopPropagation();
   if (!isRopeRemovable(state, rope.id)) {
     const active = state.interactions
-      .filter((interaction) => interaction.actorRopeId === rope.id)
+      .filter((interaction) => interaction.actorRopeId === rope.id || interaction.targetRopeId === rope.id)
       .reduce((sum, interaction) => sum + interaction.turns, 0);
-    notify(active > 0 ? `${rope.name}還有 ${active} 層下穿／扭轉未清除` : `${rope.name}上方還有其他繩子`);
+    notify(`${rope.name}仍與其他繩索有 ${active} 層拓撲交纏；可移動任一端點解開`);
     return;
   }
   state = removeRope(state, rope.id);
@@ -166,7 +165,8 @@ function drawCommittedRopes(geometry) {
     if (!data) continue;
     const removable = mode === 'game' && isRopeRemovable(state, rope.id);
     const selected = mode === 'game' && selectedEndpoint?.ropeId === rope.id;
-    const dimmed = mode === 'game' && focusedGameRopeId() !== rope.id;
+    const focusedRopeId = focusedGameRopeId();
+    const dimmed = mode === 'game' && focusedRopeId && focusedRopeId !== rope.id;
     const group = svgElement('g', {
       class: `rope-group${removable ? ' removable' : ''}${selected ? ' selected-rope' : ''}${dimmed ? ' dimmed-rope' : ''}`,
       'data-rope-id': rope.id,
@@ -199,17 +199,41 @@ function drawCommittedRopes(geometry) {
 
 function drawInteractionNodes(geometry) {
   crossingLayer.replaceChildren();
+
+  for (const crossing of geometry.crossings) {
+    const actor = ropeDefinition(crossing.actorRopeId);
+    const target = ropeDefinition(crossing.targetRopeId);
+    const actorIsOver = crossing.order === 'actor-over';
+    const tangent = actorIsOver ? crossing.actorTangent : crossing.tangent;
+    const color = actorIsOver ? actor.color : target.color;
+    const line = lineAround(crossing.point, tangent, 27);
+    const group = svgElement('g', {
+      class: 'visual-crossing',
+      'data-crossing-id': crossing.id,
+      'data-order': crossing.order,
+    });
+    group.append(
+      svgElement('line', { class: 'local-mask', ...line }),
+      svgElement('line', { class: 'local-target-shadow', ...line }),
+      svgElement('line', { class: 'local-target', ...line, stroke: color }),
+      svgElement('line', { class: 'local-target-shine', ...line }),
+    );
+    crossingLayer.append(group);
+  }
+
   for (const interaction of geometry.interactions) {
     const actor = ropeDefinition(interaction.actorRopeId);
     const target = ropeDefinition(interaction.targetRopeId);
     const line = lineAround(interaction.point, interaction.tangent);
     const angle = Math.atan2(interaction.tangent.y, interaction.tangent.x) * 180 / Math.PI;
-    const focused = mode === 'game' && focusedGameRopeId() === interaction.actorRopeId;
+    const focusedRopeId = focusedGameRopeId();
+    const focused = mode === 'game' && focusedRopeId
+      && (focusedRopeId === interaction.actorRopeId || focusedRopeId === interaction.targetRopeId);
     const group = svgElement('g', {
       class: `interaction-node${mode === 'game' ? ' game-node' : ''}${focused ? ' focused' : ''}`,
       'data-interaction-id': interaction.id,
     });
-    const loopOffsets = interaction.kind === 'underpass' ? [] : (interaction.turns === 2 ? [-13, 13] : [0]);
+    const loopOffsets = interaction.turns === 2 ? [-13, 13] : [0];
     for (const offset of loopOffsets) {
       const cx = interaction.point.x + interaction.tangent.x * offset;
       const cy = interaction.point.y + interaction.tangent.y * offset;
@@ -218,14 +242,13 @@ function drawInteractionNodes(geometry) {
         transform: `rotate(${angle} ${cx} ${cy})`,
       }));
     }
-    const nodeText = interaction.kind === 'underpass' ? '↓' : `×${interaction.turns}`;
     group.append(
       svgElement('line', { class: 'local-mask', ...line }),
       svgElement('line', { class: 'local-target-shadow', ...line }),
       svgElement('line', { class: 'local-target', ...line, stroke: target.color }),
       svgElement('line', { class: 'local-target-shine', ...line }),
       svgElement('circle', { class: `node-dot ${interaction.kind}`, cx: interaction.point.x, cy: interaction.point.y, r: 12, fill: actor.color }),
-      svgElement('text', { class: 'node-label', x: interaction.point.x, y: interaction.point.y + 1 }, nodeText),
+      svgElement('text', { class: 'node-label', x: interaction.point.x, y: interaction.point.y + 1 }, `×${interaction.turns}`),
     );
     crossingLayer.append(group);
   }
@@ -327,10 +350,10 @@ function handleGameHole(holeId) {
   const rope = state.ropes.find((item) => item.id === selectedEndpoint.ropeId);
   if (!rope) return;
   const fromHoleId = rope.endpoints[selectedEndpoint.endpoint];
-  const crossedTargets = findCrossedTargets(state, rope.id, fromHoleId, holeId);
-  state = moveEndpoint(state, rope.id, selectedEndpoint.endpoint, holeId, crossedTargets);
+  state = moveEndpoint(state, rope.id, selectedEndpoint.endpoint, holeId);
   moveFlash = { fromHoleId, toHoleId: holeId, color: rope.color };
   const released = state.lastMove.released;
+  const created = state.lastMove.created;
   selectedEndpoint = null;
   renderAll();
 
@@ -340,16 +363,19 @@ function handleGameHole(holeId) {
     drawMoveFlash();
   }, 620);
 
-  if (released.length) {
+  if (created.length) {
+    const knots = created.map((item) => ropeDefinition(item.targetRopeId).name).join('、');
+    notify(`移動段位於最上層；與第一個有效接觸 ${knots} 新增 ×1 交纏`);
+  } else if (released.length) {
     const opened = released.map((item) => {
       const target = ropeDefinition(item.targetRopeId).name;
       return item.remainingTurns ? `${target}剩 ${item.remainingTurns} 層` : `${target}已清除`;
     }).join('、');
     notify(`越過目標繩：${opened}`);
   } else if (isRopeRemovable(state, rope.id)) {
-    notify(`${rope.name}已完全在最上層，點擊發光繩身取下`);
+    notify(`${rope.name}已沒有拓撲關聯，點擊發光繩身取下`);
   } else {
-    notify('移孔完成；這次沒有越過可清除的下穿／扭轉');
+    notify('移孔完成；接觸只形成視覺上下交叉，沒有新增拓撲關聯');
   }
 }
 
@@ -463,24 +489,20 @@ function renderGameMetrics() {
   holeCount.textContent = String(state.moveCount);
   emptyCount.textContent = String(remainingTurns);
 
-  const highest = [...state.ropes].sort((a, b) => b.creationOrder - a.creationOrder)[0];
-  if (!highest) {
+  if (!state.ropes.length) {
     gameInstruction.textContent = '所有繩子都已取下';
     boardStatus.textContent = '遊戲完成';
   } else if (selectedEndpoint) {
     const rope = ropeDefinition(selectedEndpoint.ropeId);
     const endpointHole = state.ropes.find((item) => item.id === selectedEndpoint.ropeId)?.endpoints[selectedEndpoint.endpoint];
     gameInstruction.textContent = `已選${rope.name} ${selectedEndpoint.endpoint} 端（洞 ${endpointHole + 1}）· 點一個發光空洞`;
-    boardStatus.textContent = '移動只會解除既有纏繞，不會產生新的交纏';
-  } else if (isRopeRemovable(state, highest.id)) {
-    gameInstruction.textContent = `${highest.name}已完全在最上層 · 點擊發光繩身取下`;
-    boardStatus.textContent = '發光繩索現在可以從盤面取下';
+    boardStatus.textContent = '移動段視為最上層；第一個有效階層接觸可能解除舊結或建立新結';
   } else {
-    const turns = state.interactions
-      .filter((interaction) => interaction.actorRopeId === highest.id)
-      .reduce((sum, interaction) => sum + interaction.turns, 0);
-    gameInstruction.textContent = `先清除${highest.name}的 ${turns} 層下穿／扭轉：點繩端，再點跨過目標繩的空洞`;
-    boardStatus.textContent = '下穿與 ×1 需跨越一次；×2 需跨越同一目標兩次';
+    const freeCount = state.ropes.filter((rope) => isRopeRemovable(state, rope.id)).length;
+    gameInstruction.textContent = '可移動任意繩端；點擊發光繩身可直接取下無關聯繩索';
+    boardStatus.textContent = state.interactions.length
+      ? `目前 ${state.interactions.length} 個拓撲交纏 · ${freeCount} 條繩可取下`
+      : `沒有拓撲交纏 · ${freeCount} 條剩餘繩索都可自由取下`;
   }
 }
 
@@ -502,7 +524,8 @@ function renderRoster() {
 function slotLabel(targetT) {
   if (targetT === 0.5) return '中點 ½';
   if (targetT === 0.25) return '節點 ¼';
-  return '節點 ¾';
+  if (targetT === 0.75) return '節點 ¾';
+  return `實際位置 ${Math.round(targetT * 100)}%`;
 }
 
 function renderInteractions() {
@@ -512,19 +535,20 @@ function renderInteractions() {
     entry.clicks += 1;
     draftGroups.set(wrap.targetRopeId, entry);
   }
-  interactionCount.textContent = String(state.interactions.length + draftGroups.size);
+  interactionCount.textContent = String((state.crossings?.length ?? 0) + state.interactions.length + draftGroups.size);
   interactionList.replaceChildren();
-  const committed = state.interactions.map((interaction) => ({ ...interaction, draft: false }));
+  const committedCrossings = (state.crossings ?? []).map((crossing) => ({ ...crossing, visualOnly: true, draft: false }));
+  const committed = state.interactions.map((interaction) => ({ ...interaction, visualOnly: false, draft: false }));
   const drafts = [...draftGroups.values()].map((wrap, index) => ({
     id: `draft-${index}`,
     actorRopeId: state.draft.ropeId,
     ...wrap,
     draft: true,
   }));
-  const items = [...committed, ...drafts];
+  const items = [...committedCrossings, ...committed, ...drafts];
   if (!items.length) {
     const empty = document.createElement('p');
-    empty.textContent = '尚無下穿或扭轉節點';
+    empty.textContent = '尚無視覺交叉或拓撲扭轉節點';
     interactionList.append(empty);
     return;
   }
@@ -535,8 +559,8 @@ function renderInteractions() {
     element.className = 'interaction-item';
     const topologyLabel = item.draft
       ? `↓${item.clicks} 下穿待終點結算`
-      : item.kind === 'underpass'
-        ? '單純下穿 · 需跨越 1 次清除'
+      : item.visualOnly
+        ? '純視覺下穿 · 無拓撲關聯'
         : item.kind === 'helix'
           ? '雙重扭轉 ×2'
           : '單層扭轉 ×1';
@@ -711,7 +735,7 @@ window.ropeAuthorDebug = {
   crossings: (ropeId, endpoint, toHoleId) => {
     const rope = state.ropes.find((item) => item.id === ropeId);
     if (!rope) throw new Error('找不到繩子');
-    return findCrossedTargets(state, ropeId, rope.endpoints[endpoint], toHoleId);
+    return findMovementContacts(state, ropeId, rope.endpoints[endpoint], toHoleId);
   },
   moveTo: (holeId) => {
     handleGameHole(holeId);

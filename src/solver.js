@@ -5,102 +5,134 @@ import {
   moveEndpoint,
   removeRope,
 } from './topology.js';
-import { findCrossedTargets } from './geometry.js';
 
-function topRope(game) {
-  return [...game.ropes].sort((a, b) => b.creationOrder - a.creationOrder)[0] ?? null;
+function knotTurns(game) {
+  return game.interactions.reduce((sum, interaction) => sum + interaction.turns, 0);
 }
 
-function searchKey(game, ropeId) {
-  const rope = game.ropes.find((item) => item.id === ropeId);
-  const knots = game.interactions
-    .filter((item) => item.actorRopeId === ropeId)
-    .map((item) => `${item.targetRopeId}:${item.turns}`)
+function stateKey(game) {
+  const ropes = [...game.ropes]
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((rope) => `${rope.id}:${rope.endpoints.A}:${rope.endpoints.B}`)
+    .join('|');
+  const knots = [...game.interactions]
+    .map((item) => `${item.actorRopeId}>${item.targetRopeId}:${item.turns}:${item.targetT.toFixed(4)}`)
     .sort()
-    .join(',');
-  const emptyHoles = game.holes
-    .filter((hole) => !hole.occupant)
-    .map((hole) => hole.id)
-    .join(',');
-  return `${rope.endpoints.A}:${rope.endpoints.B}|${knots}|${emptyHoles}`;
+    .join('|');
+  const crossings = [...(game.crossings ?? [])]
+    .map((item) => `${item.actorRopeId}>${item.targetRopeId}:${item.order}:${item.targetT.toFixed(4)}`)
+    .sort()
+    .join('|');
+  return `${ropes}#${knots}#${crossings}`;
 }
 
-export function solveTopRope(game, maxDepth = 8) {
-  const top = topRope(game);
-  if (!top) return { game, moves: [] };
-  if (isRopeRemovable(game, top.id)) return { game, moves: [] };
+function removeFreeRopes(game) {
+  let next = game;
+  const removed = [];
+  while (true) {
+    const removable = next.ropes
+      .filter((rope) => isRopeRemovable(next, rope.id))
+      .sort((a, b) => b.creationOrder - a.creationOrder);
+    if (!removable.length) break;
+    const rope = removable[0];
+    next = removeRope(next, rope.id);
+    removed.push(rope.id);
+  }
+  return { game: next, removed };
+}
 
-  const queue = [{ game, moves: [] }];
-  const seen = new Set([searchKey(game, top.id)]);
-  while (queue.length) {
-    const current = queue.shift();
-    if (current.moves.length >= maxDepth) continue;
-    const rope = current.game.ropes.find((item) => item.id === top.id);
-    const emptyHoles = current.game.holes
-      .filter((hole) => !hole.occupant)
-      .map((hole) => hole.id);
+function priority(node) {
+  return knotTurns(node.game) * 100 + node.game.ropes.length * 5 + node.moves.length;
+}
 
+function candidateMoves(game) {
+  const emptyHoles = game.holes.filter((hole) => !hole.occupant).map((hole) => hole.id);
+  const involved = new Set(game.interactions.flatMap((item) => [item.actorRopeId, item.targetRopeId]));
+  const ropes = [...game.ropes].sort((a, b) => {
+    const aInvolved = involved.has(a.id) ? 1 : 0;
+    const bInvolved = involved.has(b.id) ? 1 : 0;
+    return bInvolved - aInvolved || b.creationOrder - a.creationOrder;
+  });
+  const result = [];
+
+  for (const rope of ropes) {
     for (const endpoint of ['A', 'B']) {
       for (const destinationHoleId of emptyHoles) {
         const fromHoleId = rope.endpoints[endpoint];
-        const crossedTargetIds = findCrossedTargets(
-          current.game,
-          top.id,
-          fromHoleId,
-          destinationHoleId,
-        );
-        const nextGame = moveEndpoint(
-          current.game,
-          top.id,
-          endpoint,
-          destinationHoleId,
-          crossedTargetIds,
-        );
-        const moves = [...current.moves, {
-          ropeId: top.id,
-          endpoint,
-          fromHoleId,
-          destinationHoleId,
-          crossedTargetIds,
-        }];
-        if (isRopeRemovable(nextGame, top.id)) return { game: nextGame, moves };
-        const key = searchKey(nextGame, top.id);
-        if (!seen.has(key)) {
-          seen.add(key);
-          queue.push({ game: nextGame, moves });
-        }
+        const nextGame = moveEndpoint(game, rope.id, endpoint, destinationHoleId);
+        const normalized = removeFreeRopes(nextGame);
+        result.push({
+          game: normalized.game,
+          move: {
+            ropeId: rope.id,
+            endpoint,
+            fromHoleId,
+            destinationHoleId,
+            contacts: nextGame.lastMove.contacts.map((item) => item.targetRopeId),
+            released: nextGame.lastMove.released,
+            created: nextGame.lastMove.created,
+          },
+          removed: normalized.removed,
+        });
       }
     }
   }
-  return null;
+
+  return result.sort((a, b) => (
+    knotTurns(a.game) - knotTurns(b.game)
+      || a.game.ropes.length - b.game.ropes.length
+  ));
 }
 
-export function solvePuzzle(puzzle, { maxDepth = 8 } = {}) {
-  let game = createGameState(puzzle);
-  const moves = [];
-  let removalCount = 0;
-  while (game.ropes.length) {
-    const result = solveTopRope(game, maxDepth);
-    if (!result) {
-      return {
-        solvable: false,
-        moveCount: moves.length,
-        removalCount,
-        moves,
-        remainingRopes: game.ropes.length,
-      };
-    }
-    moves.push(...result.moves);
-    const top = topRope(result.game);
-    game = removeRope(result.game, top.id);
-    removalCount += 1;
+export function solvePuzzle(puzzle, { maxDepth = 8, maxStates = 12000, beamWidth = 20 } = {}) {
+  const initial = removeFreeRopes(createGameState(puzzle));
+  if (!initial.game.ropes.length) {
+    return { solvable: true, moveCount: 0, removalCount: initial.removed.length, moves: [], remainingRopes: 0 };
   }
+
+  const queue = [{ game: initial.game, moves: [], removalCount: initial.removed.length }];
+  const seenDepth = new Map([[stateKey(initial.game), 0]]);
+  let exploredStates = 0;
+
+  while (queue.length && exploredStates < maxStates) {
+    queue.sort((a, b) => priority(a) - priority(b));
+    const current = queue.shift();
+    exploredStates += 1;
+    if (current.moves.length >= maxDepth) continue;
+
+    const currentTurns = knotTurns(current.game);
+    const candidates = candidateMoves(current.game)
+      .filter((candidate) => knotTurns(candidate.game) <= currentTurns + 1)
+      .slice(0, beamWidth);
+
+    for (const candidate of candidates) {
+      const moves = [...current.moves, candidate.move];
+      const removalCount = current.removalCount + candidate.removed.length;
+      if (!candidate.game.ropes.length) {
+        return {
+          solvable: true,
+          moveCount: moves.length,
+          removalCount,
+          moves,
+          remainingRopes: 0,
+          exploredStates,
+        };
+      }
+      const key = stateKey(candidate.game);
+      const previousDepth = seenDepth.get(key);
+      if (previousDepth !== undefined && previousDepth <= moves.length) continue;
+      seenDepth.set(key, moves.length);
+      queue.push({ game: candidate.game, moves, removalCount });
+    }
+  }
+
   return {
-    solvable: true,
-    moveCount: moves.length,
-    removalCount,
-    moves,
-    remainingRopes: 0,
+    solvable: false,
+    moveCount: 0,
+    removalCount: initial.removed.length,
+    moves: [],
+    remainingRopes: initial.game.ropes.length,
+    exploredStates,
   };
 }
 

@@ -7,6 +7,7 @@ import {
   HOLE_HIT_RADIUS,
   buildPuzzleGeometry,
   findCrossedTargets,
+  findMovementContacts,
   holePoint,
   nearestHole,
   pointAndTangentAt,
@@ -35,14 +36,15 @@ test('overlapping mobile hit zones resolve to the geometrically nearest hole', (
   assert.equal(nearestHole(BOARD_CENTER), null);
 });
 
-test('endpoint movement detects only active target ropes crossed by its travel line', () => {
+test('movement geometry sees a pure crossing without treating it as an active knot target', () => {
   let state = createAuthoringState();
   state = finishRope(beginRope(state, 0), 11);
   state = beginRope(state, 5);
   state = addUnderpass(state, 'rope-1');
   state = finishRope(state, 16);
 
-  assert.deepEqual(findCrossedTargets(state, 'rope-2', 5, 17), ['rope-1']);
+  assert.deepEqual(findMovementContacts(state, 'rope-2', 5, 17).map((item) => item.targetRopeId), ['rope-1']);
+  assert.deepEqual(findCrossedTargets(state, 'rope-2', 5, 17), []);
   assert.deepEqual(findCrossedTargets(state, 'rope-2', 5, 6), []);
 });
 
@@ -53,10 +55,11 @@ test('actor geometry passes through the target fixed hook point', () => {
   state = addUnderpass(state, 'rope-1');
   state = finishRope(state, 16);
   const geometry = buildPuzzleGeometry(state);
-  const interaction = geometry.interactions[0];
+  const interaction = geometry.crossings[0];
   const targetMidpoint = pointAndTangentAt(geometry.ropes.get('rope-1').samples, 0.5).point;
   assert.ok(Math.hypot(interaction.point.x - targetMidpoint.x, interaction.point.y - targetMidpoint.y) < 0.001);
-  assert.equal(interaction.turns, 1);
+  assert.equal(interaction.kind, 'underpass');
+  assert.equal(interaction.order, 'actor-under');
 });
 
 test('two underpass clicks on the same target can resolve to one double-twist node', () => {

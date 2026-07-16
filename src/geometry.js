@@ -92,42 +92,79 @@ export function pointAndTangentAt(samples, normalizedT) {
   return { point: { ...samples.at(-1) }, tangent: { x: 1, y: 0 } };
 }
 
+function tangentNearestPoint(samples, point) {
+  let nearestIndex = 0;
+  let nearestDistance = Infinity;
+  samples.forEach((sample, index) => {
+    const candidateDistance = Math.hypot(sample.x - point.x, sample.y - point.y);
+    if (candidateDistance < nearestDistance) {
+      nearestDistance = candidateDistance;
+      nearestIndex = index;
+    }
+  });
+  const before = samples[Math.max(0, nearestIndex - 1)];
+  const after = samples[Math.min(samples.length - 1, nearestIndex + 1)];
+  const magnitude = Math.hypot(after.x - before.x, after.y - before.y) || 1;
+  return { x: (after.x - before.x) / magnitude, y: (after.y - before.y) / magnitude };
+}
+
 export function pathFromSamples(samples) {
   if (!samples.length) return '';
   return samples.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(' ');
 }
 
 export function buildPuzzleGeometry(state) {
-  const ropes = new Map();
-  const interactionGeometry = [];
-
-  for (const rope of [...state.ropes].sort((a, b) => a.creationOrder - b.creationOrder)) {
-    const ropeInteractions = state.interactions.filter((interaction) => interaction.actorRopeId === rope.id);
-    const waypoints = [holePoint(rope.endpoints.A)];
-
-    for (const interaction of ropeInteractions) {
-      const target = ropes.get(interaction.targetRopeId);
-      if (!target) continue;
-      const hook = pointAndTangentAt(target.samples, interaction.targetT);
-      waypoints.push(hook.point);
-      interactionGeometry.push({
-        ...interaction,
-        point: { ...hook.point },
-        tangent: { ...hook.tangent },
-      });
-    }
-
-    waypoints.push(holePoint(rope.endpoints.B));
+  const orderedRopes = [...state.ropes].sort((a, b) => a.creationOrder - b.creationOrder);
+  let ropes = new Map(orderedRopes.map((rope) => {
+    const waypoints = [holePoint(rope.endpoints.A), holePoint(rope.endpoints.B)];
     const samples = sampleCurve(waypoints);
-    ropes.set(rope.id, {
-      ...rope,
-      waypoints,
-      samples,
-      path: pathFromSamples(samples),
-    });
+    return [rope.id, { ...rope, waypoints, samples, path: pathFromSamples(samples) }];
+  }));
+
+  const topologyNodes = [
+    ...(state.crossings ?? []).map((crossing) => ({ ...crossing, topologyType: 'crossing' })),
+    ...state.interactions.map((interaction) => ({ ...interaction, topologyType: 'interaction' })),
+  ];
+
+  // Game moves may create links to ropes placed before or after the actor. Iterating
+  // from straight chords avoids relying on authoring creation order for geometry.
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    const next = new Map();
+    for (const rope of orderedRopes) {
+      const nodes = topologyNodes
+        .filter((node) => node.actorRopeId === rope.id)
+        .sort((a, b) => (a.routeOrder ?? 0) - (b.routeOrder ?? 0));
+      const waypoints = [holePoint(rope.endpoints.A)];
+      for (const node of nodes) {
+        const target = ropes.get(node.targetRopeId);
+        if (!target) continue;
+        waypoints.push(pointAndTangentAt(target.samples, node.targetT).point);
+      }
+      waypoints.push(holePoint(rope.endpoints.B));
+      const samples = sampleCurve(waypoints);
+      next.set(rope.id, { ...rope, waypoints, samples, path: pathFromSamples(samples) });
+    }
+    ropes = next;
   }
 
-  return { ropes, interactions: interactionGeometry };
+  const geometryFor = (items) => items.flatMap((item) => {
+    const target = ropes.get(item.targetRopeId);
+    if (!target) return [];
+    const hook = pointAndTangentAt(target.samples, item.targetT);
+    const actor = ropes.get(item.actorRopeId);
+    return [{
+      ...item,
+      point: { ...hook.point },
+      tangent: { ...hook.tangent },
+      actorTangent: actor ? tangentNearestPoint(actor.samples, hook.point) : { x: -hook.tangent.y, y: hook.tangent.x },
+    }];
+  });
+
+  return {
+    ropes,
+    crossings: geometryFor(state.crossings ?? []),
+    interactions: geometryFor(state.interactions),
+  };
 }
 
 function signedSide(point, origin, tangent) {
@@ -173,9 +210,10 @@ export function resolveDraftInteractions(state, endHoleId) {
       targetT: event.targetT,
       clicks,
       twists,
-      turns: Math.max(1, twists),
+      turns: twists,
       kind: twists === 0 ? 'underpass' : (twists === 1 ? 'twist' : 'helix'),
       sameSide,
+      routeOrder: firstIndex,
       localOrder: {
         before: 'actor-top',
         atNode: 'actor-under',
@@ -185,34 +223,54 @@ export function resolveDraftInteractions(state, endHoleId) {
   });
 }
 
-function segmentsIntersect(a, b, c, d) {
+function segmentIntersection(a, b, c, d) {
   const denominator = (b.x - a.x) * (d.y - c.y) - (b.y - a.y) * (d.x - c.x);
-  if (Math.abs(denominator) < 0.000001) return false;
-  const t = ((c.x - a.x) * (d.y - c.y) - (c.y - a.y) * (d.x - c.x)) / denominator;
-  const u = ((c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x)) / denominator;
-  return t > 0.001 && t < 0.999 && u >= 0 && u <= 1;
+  if (Math.abs(denominator) < 0.000001) return null;
+  const movementT = ((c.x - a.x) * (d.y - c.y) - (c.y - a.y) * (d.x - c.x)) / denominator;
+  const targetSegmentT = ((c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x)) / denominator;
+  if (movementT <= 0.001 || movementT >= 0.999 || targetSegmentT < 0 || targetSegmentT > 1) return null;
+  return {
+    movementT,
+    targetSegmentT,
+    point: {
+      x: a.x + (b.x - a.x) * movementT,
+      y: a.y + (b.y - a.y) * movementT,
+    },
+  };
 }
 
-export function findCrossedTargets(state, actorRopeId, fromHoleId, toHoleId) {
+export function findMovementContacts(state, actorRopeId, fromHoleId, toHoleId) {
   const geometry = buildPuzzleGeometry(state);
   const movementStart = holePoint(fromHoleId);
   const movementEnd = holePoint(toHoleId);
+  const contacts = [];
+
+  for (const [targetRopeId, target] of geometry.ropes) {
+    if (targetRopeId === actorRopeId) continue;
+    let first = null;
+    for (let index = 1; index < target.samples.length; index += 1) {
+      const hit = segmentIntersection(movementStart, movementEnd, target.samples[index - 1], target.samples[index]);
+      if (!hit || (first && first.movementT <= hit.movementT)) continue;
+      first = {
+        targetRopeId,
+        movementT: hit.movementT,
+        targetT: ((index - 1) + hit.targetSegmentT) / (target.samples.length - 1),
+        point: hit.point,
+      };
+    }
+    if (first) contacts.push(first);
+  }
+
+  return contacts.sort((a, b) => a.movementT - b.movementT);
+}
+
+export function findCrossedTargets(state, actorRopeId, fromHoleId, toHoleId) {
   const activeTargets = new Set(
     state.interactions
-      .filter((interaction) => interaction.actorRopeId === actorRopeId)
-      .map((interaction) => interaction.targetRopeId),
+      .filter((interaction) => interaction.actorRopeId === actorRopeId || interaction.targetRopeId === actorRopeId)
+      .map((interaction) => interaction.actorRopeId === actorRopeId ? interaction.targetRopeId : interaction.actorRopeId),
   );
-  const crossed = [];
-
-  for (const targetRopeId of activeTargets) {
-    const target = geometry.ropes.get(targetRopeId);
-    if (!target) continue;
-    for (let index = 1; index < target.samples.length; index += 1) {
-      if (segmentsIntersect(movementStart, movementEnd, target.samples[index - 1], target.samples[index])) {
-        crossed.push(targetRopeId);
-        break;
-      }
-    }
-  }
-  return crossed;
+  return findMovementContacts(state, actorRopeId, fromHoleId, toHoleId)
+    .map((contact) => contact.targetRopeId)
+    .filter((targetRopeId) => activeTargets.has(targetRopeId));
 }

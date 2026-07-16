@@ -10,8 +10,9 @@ test('the reference tangled puzzle has a complete legal solution', () => {
   assert.equal(result.removalCount, 10);
 });
 
-test('playable generation skips a seed that fails the bounded legal solver', () => {
+test('playable generation is reproducible and guarded by the full-board solver', () => {
   const puzzle = generatePlayablePuzzle(2);
-  assert.notEqual(puzzle.seed, 2);
+  const repeated = generatePlayablePuzzle(2);
+  assert.deepEqual(repeated, puzzle);
   assert.equal(solvePuzzle(puzzle).solvable, true);
 });
