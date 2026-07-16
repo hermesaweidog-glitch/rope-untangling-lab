@@ -79,8 +79,7 @@ export function countUnderpassClicks(state, ropeId) {
 }
 
 export function countPassiveHooks(state, ropeId) {
-  const committedTargets = state.interactions.filter((interaction) => interaction.targetRopeId === ropeId).length
-    + (state.crossings ?? []).filter((crossing) => crossing.targetRopeId === ropeId).length;
+  const committedTargets = state.interactions.filter((interaction) => interaction.targetRopeId === ropeId).length;
   if (!state.draft) return committedTargets;
   const draftTargets = new Set(
     state.draft.wraps
@@ -110,7 +109,7 @@ export function beginRope(state, holeId) {
   });
 }
 
-export function addUnderpass(state, targetRopeId) {
+export function addUnderpass(state, targetRopeId, requestedTargetT) {
   if (!state.draft) throw new Error('請先選擇繩子的起點。');
   if (targetRopeId === state.draft.ropeId) throw new Error('繩子不能從自己下方穿過。');
   if (!state.ropes.some((rope) => rope.id === targetRopeId)) throw new Error('只能從已完成的繩子下方穿過。');
@@ -122,8 +121,9 @@ export function addUnderpass(state, targetRopeId) {
   let targetT = existingPass?.targetT;
   if (targetT === undefined) {
     const passiveHooks = countPassiveHooks(state, targetRopeId);
-    if (passiveHooks >= MAX_PASSIVE_HOOKS) throw new Error('目標繩已達被動交匯上限 3 個。');
-    targetT = PASSIVE_SLOTS[passiveHooks];
+    targetT = Number.isFinite(requestedTargetT)
+      ? Math.max(0.001, Math.min(0.999, requestedTargetT))
+      : PASSIVE_SLOTS[Math.min(passiveHooks, PASSIVE_SLOTS.length - 1)];
   }
 
   const previousPasses = state.draft.wraps.filter((wrap) => wrap.targetRopeId === targetRopeId).length;
@@ -162,6 +162,10 @@ export function finishRope(state, endHoleId) {
   const resolvedTopology = resolveDraftInteractions(state, endHoleId);
   const resolvedCrossings = resolvedTopology.filter((item) => item.twists === 0);
   const resolvedInteractions = resolvedTopology.filter((item) => item.twists > 0);
+  for (const interaction of resolvedInteractions) {
+    const existingNodes = state.interactions.filter((item) => item.targetRopeId === interaction.targetRopeId).length;
+    if (existingNodes + 1 > MAX_PASSIVE_HOOKS) throw new Error('目標繩已達被動交匯上限 3 個。');
+  }
   const crossings = resolvedCrossings.map((crossing, index) => ({
     id: `crossing-${(state.crossings ?? []).length + index + 1}`,
     actorRopeId: state.draft.ropeId,
@@ -216,11 +220,11 @@ export function validatePuzzle(state) {
   }
 
   for (const interaction of state.interactions) {
-    if (!PASSIVE_SLOTS.includes(interaction.targetT)) errors.push(`${interaction.id} 使用無效節點。`);
+    if (!Number.isFinite(interaction.targetT) || interaction.targetT <= 0 || interaction.targetT >= 1) errors.push(`${interaction.id} 使用無效節點。`);
     if (![1, 2].includes(interaction.turns)) errors.push(`${interaction.id} 圈數無效。`);
   }
   for (const crossing of state.crossings ?? []) {
-    if (!PASSIVE_SLOTS.includes(crossing.targetT)) errors.push(`${crossing.id} 使用無效視覺交點。`);
+    if (!Number.isFinite(crossing.targetT) || crossing.targetT <= 0 || crossing.targetT >= 1) errors.push(`${crossing.id} 使用無效視覺交點。`);
   }
 
   return { valid: errors.length === 0, errors };

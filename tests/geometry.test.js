@@ -10,6 +10,7 @@ import {
   findMovementContacts,
   holePoint,
   nearestHole,
+  nearestTOnSamples,
   pointAndTangentAt,
 } from '../src/geometry.js';
 
@@ -34,6 +35,14 @@ test('overlapping mobile hit zones resolve to the geometrically nearest hole', (
   const nearHoleOne = { x: holeOne.x + 5, y: holeOne.y + 4 };
   assert.equal(nearestHole(nearHoleOne)?.id, 0);
   assert.equal(nearestHole(BOARD_CENTER), null);
+});
+
+test('a rope-body click keeps its exact normalized position on the target curve', () => {
+  let state = createAuthoringState();
+  state = finishRope(beginRope(state, 0), 11);
+  const samples = buildPuzzleGeometry(state).ropes.get('rope-1').samples;
+  assert.ok(Math.abs(nearestTOnSamples(samples, BOARD_CENTER) - 0.5) < 0.01);
+  assert.ok(Math.abs(nearestTOnSamples(samples, pointAndTangentAt(samples, 0.37).point) - 0.37) < 0.01);
 });
 
 test('movement geometry sees a pure crossing without treating it as an active knot target', () => {

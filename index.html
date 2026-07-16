@@ -37,7 +37,7 @@
 
           <div class="quota-card">
             <div><span>下穿次數</span><strong id="active-quota">0 / 2</strong></div>
-            <div><span>交匯節點</span><strong>½ → ¼ → ¾</strong></div>
+            <div><span>被動 knot</span><strong>初始最多 3</strong></div>
           </div>
 
           <div class="actions">
@@ -47,7 +47,7 @@
             <button id="random-button" class="primary" type="button">✦ 隨機完整出題</button>
             <button id="start-game-button" class="play-button" type="button" disabled>▶ 開始遊戲</button>
           </div>
-          <p class="microcopy">純下穿只保留視覺上下層，沒有物理交纏。放下終點後，才依兩側位置結算是否形成 ×1 或 ×2；三節點上限只限制初始出題。</p>
+          <p class="microcopy">點擊位置就是實際交叉位置。純下穿只交換視覺層級，不建立節點或物理關聯；只有折返形成 ×1／×2 才占初始三節點配額。</p>
         </aside>
 
         <section class="board-shell" aria-label="22 洞圓形出題盤">
@@ -111,8 +111,8 @@
           </div>
           <div id="rope-roster" class="rope-roster"></div>
           <div class="interaction-log">
-            <div class="log-heading"><strong>視覺交叉／拓撲節點</strong><span id="interaction-count">0</span></div>
-            <div id="interaction-list" class="interaction-list"><p>尚無交叉或扭轉節點</p></div>
+            <div class="log-heading"><strong>拓撲節點</strong><span id="interaction-count">0</span></div>
+            <div id="interaction-list" class="interaction-list"><p>尚無拓撲扭轉節點</p></div>
           </div>
           <div class="seed-row"><span>題目種子</span><code id="seed-value">手動</code></div>
         </aside>

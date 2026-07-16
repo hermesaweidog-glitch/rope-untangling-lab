@@ -30,6 +30,40 @@ function distance(a, b) {
   return Math.hypot(b.x - a.x, b.y - a.y);
 }
 
+export function nearestTOnSamples(samples, point) {
+  if (samples.length < 2) return 0;
+  const lengths = [];
+  let totalLength = 0;
+  for (let index = 1; index < samples.length; index += 1) {
+    const segmentLength = distance(samples[index - 1], samples[index]);
+    lengths.push(segmentLength);
+    totalLength += segmentLength;
+  }
+  if (totalLength === 0) return 0;
+
+  let bestDistance = Infinity;
+  let bestTravelled = 0;
+  let travelled = 0;
+  for (let index = 1; index < samples.length; index += 1) {
+    const start = samples[index - 1];
+    const end = samples[index];
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const lengthSquared = dx * dx + dy * dy;
+    const projection = lengthSquared === 0
+      ? 0
+      : Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared));
+    const projected = { x: start.x + dx * projection, y: start.y + dy * projection };
+    const currentDistance = distance(projected, point);
+    if (currentDistance < bestDistance) {
+      bestDistance = currentDistance;
+      bestTravelled = travelled + lengths[index - 1] * projection;
+    }
+    travelled += lengths[index - 1];
+  }
+  return bestTravelled / totalLength;
+}
+
 function catmullPoint(p0, p1, p2, p3, t) {
   const t2 = t * t;
   const t3 = t2 * t;

@@ -118,6 +118,9 @@ h2 { margin: 2px 0 0; font-size: 19px; }
 .local-target-shadow { stroke: rgba(0,0,0,.62); stroke-width: 23; stroke-linecap: round; transform: translateY(5px); }
 .local-target { stroke-width: 17; stroke-linecap: round; }
 .local-target-shine { stroke: rgba(255,255,255,.35); stroke-width: 4; stroke-linecap: round; transform: translateY(-3px); }
+.visual-crossing-gap { stroke: #2b221b; stroke-width: 23; stroke-linecap: butt; }
+.visual-crossing-upper { stroke-width: 17; stroke-linecap: butt; }
+.visual-crossing-shine { stroke: rgba(255,255,255,.32); stroke-width: 3; stroke-linecap: butt; transform: translateY(-3px); }
 .helix-loop { fill: none; stroke-width: 11; filter: url(#rope-shadow); }
 .node-dot { stroke: #1a1511; stroke-width: 4; }
 .node-dot.underpass { stroke: rgba(255,255,255,.82); stroke-width: 3; stroke-dasharray: 3 2; }

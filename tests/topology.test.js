@@ -53,16 +53,50 @@ test('a rope can record at most two underpass clicks', () => {
   assert.throws(() => addUnderpass(state, 'rope-1'), /下穿上限/);
 });
 
-test('a target receives hooks at middle, quarter, then three-quarter and rejects a fourth', () => {
+test('a target accepts three initial knots and rejects a fourth when the endpoint confirms it', () => {
   let state = createAuthoringState();
-  state = placeRope(state, 0, 1);
-  state = placeRope(state, 2, 3, ['rope-1']);
-  state = placeRope(state, 4, 5, ['rope-1']);
-  state = placeRope(state, 6, 7, ['rope-1']);
+  state = placeRope(state, 0, 11);
+  state = placeRope(state, 5, 6, ['rope-1']);
+  state = placeRope(state, 4, 7, ['rope-1']);
+  state = placeRope(state, 3, 8, ['rope-1']);
   assert.deepEqual(PASSIVE_SLOTS, [0.5, 0.25, 0.75]);
   assert.equal(countPassiveHooks(state, 'rope-1'), 3);
-  state = beginRope(state, 8);
-  assert.throws(() => addUnderpass(state, 'rope-1'), /被動交匯上限/);
+  state = beginRope(state, 2);
+  state = addUnderpass(state, 'rope-1');
+  assert.throws(() => finishRope(state, 1), /被動交匯上限/);
+});
+
+test('pure crossing remains legal when its target already has three topology knots', () => {
+  let state = createAuthoringState();
+  state = placeRope(state, 0, 11);
+  state = placeRope(state, 5, 6, ['rope-1']);
+  state = placeRope(state, 4, 7, ['rope-1']);
+  state = placeRope(state, 3, 8, ['rope-1']);
+
+  state = beginRope(state, 17);
+  state = addUnderpass(state, 'rope-1', 0.5);
+  state = finishRope(state, 9);
+
+  assert.equal(state.interactions.length, 3);
+  assert.equal(state.crossings.length, 1);
+  assert.equal(countPassiveHooks(state, 'rope-1'), 3);
+});
+
+test('red, green, and blue can share one visual crossing without creating topology nodes', () => {
+  let state = createAuthoringState();
+  state = placeRope(state, 0, 11);
+
+  state = beginRope(state, 17);
+  state = addUnderpass(state, 'rope-1', 0.5);
+  state = finishRope(state, 8);
+
+  state = beginRope(state, 4);
+  state = addUnderpass(state, 'rope-1', 0.5);
+  state = finishRope(state, 14);
+
+  assert.equal(state.interactions.length, 0);
+  assert.deepEqual(state.crossings.map((crossing) => crossing.targetT), [0.5, 0.5]);
+  assert.equal(countPassiveHooks(state, 'rope-1'), 0);
 });
 
 function twistScenario(clicks, endHoleId) {

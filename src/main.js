@@ -24,6 +24,7 @@ import {
   findMovementContacts,
   holePoint,
   nearestHole,
+  nearestTOnSamples,
   pathFromSamples,
   pointAndTangentAt,
   sampleCurve,
@@ -133,7 +134,9 @@ function requestAuthorWrap(event, rope) {
     return;
   }
   try {
-    state = addUnderpass(state, rope.id);
+    const target = buildPuzzleGeometry(state).ropes.get(rope.id);
+    const targetT = nearestTOnSamples(target.samples, boardPointFromEvent(event));
+    state = addUnderpass(state, rope.id, targetT);
     const passCount = state.draft.wraps.filter((wrap) => wrap.targetRopeId === rope.id).length;
     notify(`${ropeDefinition(state.draft.ropeId).name}從${rope.name}下方穿過（第 ${passCount} 次）· 放下終點後才判定扭轉`);
     renderAll();
@@ -206,17 +209,16 @@ function drawInteractionNodes(geometry) {
     const actorIsOver = crossing.order === 'actor-over';
     const tangent = actorIsOver ? crossing.actorTangent : crossing.tangent;
     const color = actorIsOver ? actor.color : target.color;
-    const line = lineAround(crossing.point, tangent, 27);
+    const line = lineAround(crossing.point, tangent, 18);
     const group = svgElement('g', {
       class: 'visual-crossing',
       'data-crossing-id': crossing.id,
       'data-order': crossing.order,
     });
     group.append(
-      svgElement('line', { class: 'local-mask', ...line }),
-      svgElement('line', { class: 'local-target-shadow', ...line }),
-      svgElement('line', { class: 'local-target', ...line, stroke: color }),
-      svgElement('line', { class: 'local-target-shine', ...line }),
+      svgElement('line', { class: 'visual-crossing-gap', ...line }),
+      svgElement('line', { class: 'visual-crossing-upper', ...line, stroke: color }),
+      svgElement('line', { class: 'visual-crossing-shine', ...line }),
     );
     crossingLayer.append(group);
   }
@@ -535,20 +537,19 @@ function renderInteractions() {
     entry.clicks += 1;
     draftGroups.set(wrap.targetRopeId, entry);
   }
-  interactionCount.textContent = String((state.crossings?.length ?? 0) + state.interactions.length + draftGroups.size);
+  interactionCount.textContent = String(state.interactions.length + draftGroups.size);
   interactionList.replaceChildren();
-  const committedCrossings = (state.crossings ?? []).map((crossing) => ({ ...crossing, visualOnly: true, draft: false }));
-  const committed = state.interactions.map((interaction) => ({ ...interaction, visualOnly: false, draft: false }));
+  const committed = state.interactions.map((interaction) => ({ ...interaction, draft: false }));
   const drafts = [...draftGroups.values()].map((wrap, index) => ({
     id: `draft-${index}`,
     actorRopeId: state.draft.ropeId,
     ...wrap,
     draft: true,
   }));
-  const items = [...committedCrossings, ...committed, ...drafts];
+  const items = [...committed, ...drafts];
   if (!items.length) {
     const empty = document.createElement('p');
-    empty.textContent = '尚無視覺交叉或拓撲扭轉節點';
+    empty.textContent = '尚無拓撲扭轉節點';
     interactionList.append(empty);
     return;
   }
@@ -559,11 +560,9 @@ function renderInteractions() {
     element.className = 'interaction-item';
     const topologyLabel = item.draft
       ? `↓${item.clicks} 下穿待終點結算`
-      : item.visualOnly
-        ? '純視覺下穿 · 無拓撲關聯'
-        : item.kind === 'helix'
-          ? '雙重扭轉 ×2'
-          : '單層扭轉 ×1';
+      : item.kind === 'helix'
+        ? '雙重扭轉 ×2'
+        : '單層扭轉 ×1';
     element.innerHTML = `<strong>${actor.name} → ${target.name}</strong><br><span>${slotLabel(item.targetT)} · ${topologyLabel}</span>`;
     interactionList.append(element);
   }
@@ -710,8 +709,8 @@ window.ropeAuthorDebug = {
   validate: () => mode === 'author' ? validatePuzzle(state) : { valid: true, errors: [] },
   geometry: () => buildPuzzleGeometry(state),
   clickHole: handleHole,
-  wrap: (targetRopeId) => {
-    state = addUnderpass(state, targetRopeId);
+  wrap: (targetRopeId, targetT) => {
+    state = addUnderpass(state, targetRopeId, targetT);
     renderAll();
     return structuredClone(state);
   },
