@@ -216,7 +216,6 @@ function drawInteractionNodes(geometry) {
       'data-order': crossing.order,
     });
     group.append(
-      svgElement('line', { class: 'visual-crossing-gap', ...line }),
       svgElement('line', { class: 'visual-crossing-upper', ...line, stroke: color }),
       svgElement('line', { class: 'visual-crossing-shine', ...line }),
     );
