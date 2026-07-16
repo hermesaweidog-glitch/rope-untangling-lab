@@ -30,6 +30,7 @@ import {
   sampleCurve,
 } from './geometry.js';
 import { generatePlayablePuzzle, solvePuzzle } from './solver.js';
+import { buildRenderStack } from './render-order.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const board = document.querySelector('#board');
@@ -161,97 +162,107 @@ function requestGameRope(event, rope) {
   if (isGameComplete(state)) showVictory();
 }
 
-function drawCommittedRopes(geometry) {
-  ropeLayer.replaceChildren();
-  for (const rope of [...state.ropes].sort((a, b) => a.creationOrder - b.creationOrder)) {
-    const data = geometry.ropes.get(rope.id);
-    if (!data) continue;
-    const removable = mode === 'game' && isRopeRemovable(state, rope.id);
-    const selected = mode === 'game' && selectedEndpoint?.ropeId === rope.id;
-    const focusedRopeId = focusedGameRopeId();
-    const dimmed = mode === 'game' && focusedRopeId && focusedRopeId !== rope.id;
-    const group = svgElement('g', {
-      class: `rope-group${removable ? ' removable' : ''}${selected ? ' selected-rope' : ''}${dimmed ? ' dimmed-rope' : ''}`,
-      'data-rope-id': rope.id,
-    });
-    if (removable) {
-      group.append(svgElement('path', { class: 'rope-ready-glow', d: data.path, stroke: rope.color }));
-    }
-    group.append(
-      svgElement('path', { class: 'rope-shadow', d: data.path }),
-      svgElement('path', { class: 'rope-body', d: data.path, stroke: rope.color }),
-      svgElement('path', { class: 'rope-shine', d: data.path }),
-    );
-    const hit = svgElement('path', {
-      class: `rope-hit${mode === 'game' ? ' game-rope-hit' : ''}`,
-      d: data.path,
-      tabindex: '0',
-      role: 'button',
-      'aria-label': removable ? `取下${rope.name}` : mode === 'game' ? `${rope.name}尚不可取下` : `讓自由端從${rope.name}下方穿過`,
-      'data-rope-id': rope.id,
-    });
-    const action = (event) => mode === 'game' ? requestGameRope(event, rope) : requestAuthorWrap(event, rope);
-    hit.addEventListener('click', action);
-    hit.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') action(event);
-    });
-    group.append(hit);
-    ropeLayer.append(group);
+function createCommittedRope(geometry, rope) {
+  const data = geometry.ropes.get(rope.id);
+  if (!data) return null;
+  const removable = mode === 'game' && isRopeRemovable(state, rope.id);
+  const selected = mode === 'game' && selectedEndpoint?.ropeId === rope.id;
+  const focusedRopeId = focusedGameRopeId();
+  const dimmed = mode === 'game' && focusedRopeId && focusedRopeId !== rope.id;
+  const group = svgElement('g', {
+    class: `rope-group${removable ? ' removable' : ''}${selected ? ' selected-rope' : ''}${dimmed ? ' dimmed-rope' : ''}`,
+    'data-rope-id': rope.id,
+  });
+  if (removable) {
+    group.append(svgElement('path', { class: 'rope-ready-glow', d: data.path, stroke: rope.color }));
   }
+  group.append(
+    svgElement('path', { class: 'rope-shadow', d: data.path }),
+    svgElement('path', { class: 'rope-body', d: data.path, stroke: rope.color }),
+    svgElement('path', { class: 'rope-shine', d: data.path }),
+  );
+  const hit = svgElement('path', {
+    class: `rope-hit${mode === 'game' ? ' game-rope-hit' : ''}`,
+    d: data.path,
+    tabindex: '0',
+    role: 'button',
+    'aria-label': removable ? `取下${rope.name}` : mode === 'game' ? `${rope.name}尚不可取下` : `讓自由端從${rope.name}下方穿過`,
+    'data-rope-id': rope.id,
+  });
+  const action = (event) => mode === 'game' ? requestGameRope(event, rope) : requestAuthorWrap(event, rope);
+  hit.addEventListener('click', action);
+  hit.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') action(event);
+  });
+  group.append(hit);
+  return group;
 }
 
-function drawInteractionNodes(geometry) {
-  crossingLayer.replaceChildren();
+function createVisualCrossing(crossing) {
+  const actor = ropeDefinition(crossing.actorRopeId);
+  const target = ropeDefinition(crossing.targetRopeId);
+  const actorIsOver = crossing.order === 'actor-over';
+  const tangent = actorIsOver ? crossing.actorTangent : crossing.tangent;
+  const color = actorIsOver ? actor.color : target.color;
+  const line = lineAround(crossing.point, tangent, 18);
+  const group = svgElement('g', {
+    class: 'visual-crossing',
+    'data-crossing-id': crossing.id,
+    'data-order': crossing.order,
+  });
+  group.append(
+    svgElement('line', { class: 'visual-crossing-upper', ...line, stroke: color }),
+    svgElement('line', { class: 'visual-crossing-shine', ...line }),
+  );
+  return group;
+}
 
-  for (const crossing of geometry.crossings) {
-    const actor = ropeDefinition(crossing.actorRopeId);
-    const target = ropeDefinition(crossing.targetRopeId);
-    const actorIsOver = crossing.order === 'actor-over';
-    const tangent = actorIsOver ? crossing.actorTangent : crossing.tangent;
-    const color = actorIsOver ? actor.color : target.color;
-    const line = lineAround(crossing.point, tangent, 18);
-    const group = svgElement('g', {
-      class: 'visual-crossing',
-      'data-crossing-id': crossing.id,
-      'data-order': crossing.order,
-    });
-    group.append(
-      svgElement('line', { class: 'visual-crossing-upper', ...line, stroke: color }),
-      svgElement('line', { class: 'visual-crossing-shine', ...line }),
-    );
-    crossingLayer.append(group);
+function createInteractionNode(interaction) {
+  const actor = ropeDefinition(interaction.actorRopeId);
+  const target = ropeDefinition(interaction.targetRopeId);
+  const line = lineAround(interaction.point, interaction.tangent);
+  const angle = Math.atan2(interaction.tangent.y, interaction.tangent.x) * 180 / Math.PI;
+  const focusedRopeId = focusedGameRopeId();
+  const focused = mode === 'game' && focusedRopeId
+    && (focusedRopeId === interaction.actorRopeId || focusedRopeId === interaction.targetRopeId);
+  const group = svgElement('g', {
+    class: `interaction-node${mode === 'game' ? ' game-node' : ''}${focused ? ' focused' : ''}`,
+    'data-interaction-id': interaction.id,
+  });
+  const loopOffsets = interaction.turns === 2 ? [-13, 13] : [0];
+  for (const offset of loopOffsets) {
+    const cx = interaction.point.x + interaction.tangent.x * offset;
+    const cy = interaction.point.y + interaction.tangent.y * offset;
+    group.append(svgElement('ellipse', {
+      class: 'helix-loop', cx, cy, rx: 15, ry: 27, stroke: actor.color,
+      transform: `rotate(${angle} ${cx} ${cy})`,
+    }));
   }
+  group.append(
+    svgElement('line', { class: 'local-mask', ...line }),
+    svgElement('line', { class: 'local-target-shadow', ...line }),
+    svgElement('line', { class: 'local-target', ...line, stroke: target.color }),
+    svgElement('line', { class: 'local-target-shine', ...line }),
+    svgElement('circle', { class: `node-dot ${interaction.kind}`, cx: interaction.point.x, cy: interaction.point.y, r: 12, fill: actor.color }),
+    svgElement('text', { class: 'node-label', x: interaction.point.x, y: interaction.point.y + 1 }, `×${interaction.turns}`),
+  );
+  return group;
+}
 
-  for (const interaction of geometry.interactions) {
-    const actor = ropeDefinition(interaction.actorRopeId);
-    const target = ropeDefinition(interaction.targetRopeId);
-    const line = lineAround(interaction.point, interaction.tangent);
-    const angle = Math.atan2(interaction.tangent.y, interaction.tangent.x) * 180 / Math.PI;
-    const focusedRopeId = focusedGameRopeId();
-    const focused = mode === 'game' && focusedRopeId
-      && (focusedRopeId === interaction.actorRopeId || focusedRopeId === interaction.targetRopeId);
-    const group = svgElement('g', {
-      class: `interaction-node${mode === 'game' ? ' game-node' : ''}${focused ? ' focused' : ''}`,
-      'data-interaction-id': interaction.id,
-    });
-    const loopOffsets = interaction.turns === 2 ? [-13, 13] : [0];
-    for (const offset of loopOffsets) {
-      const cx = interaction.point.x + interaction.tangent.x * offset;
-      const cy = interaction.point.y + interaction.tangent.y * offset;
-      group.append(svgElement('ellipse', {
-        class: 'helix-loop', cx, cy, rx: 15, ry: 27, stroke: actor.color,
-        transform: `rotate(${angle} ${cx} ${cy})`,
-      }));
-    }
-    group.append(
-      svgElement('line', { class: 'local-mask', ...line }),
-      svgElement('line', { class: 'local-target-shadow', ...line }),
-      svgElement('line', { class: 'local-target', ...line, stroke: target.color }),
-      svgElement('line', { class: 'local-target-shine', ...line }),
-      svgElement('circle', { class: `node-dot ${interaction.kind}`, cx: interaction.point.x, cy: interaction.point.y, r: 12, fill: actor.color }),
-      svgElement('text', { class: 'node-label', x: interaction.point.x, y: interaction.point.y + 1 }, `×${interaction.turns}`),
-    );
-    crossingLayer.append(group);
+function drawCommittedScene(geometry) {
+  ropeLayer.replaceChildren();
+  crossingLayer.replaceChildren();
+  const stack = buildRenderStack(state.ropes, geometry.crossings, geometry.interactions);
+  for (const entry of stack) {
+    const group = entry.kind === 'rope'
+      ? createCommittedRope(geometry, entry.item)
+      : entry.kind === 'crossing'
+        ? createVisualCrossing(entry.item)
+        : createInteractionNode(entry.item);
+    if (!group) continue;
+    group.dataset.renderKind = entry.kind;
+    group.dataset.renderLayer = String(entry.layer);
+    ropeLayer.append(group);
   }
 }
 
@@ -587,8 +598,7 @@ function renderAll() {
   pageTitle.textContent = mode === 'game' ? '繩結解謎' : '繩結出題工房';
   gameHud.hidden = mode !== 'game';
   const geometry = buildPuzzleGeometry(state);
-  drawCommittedRopes(geometry);
-  drawInteractionNodes(geometry);
+  drawCommittedScene(geometry);
   drawPreview(geometry);
   drawMoveFlash();
   drawHoles();
