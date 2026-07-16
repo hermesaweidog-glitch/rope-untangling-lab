@@ -31,7 +31,7 @@ import {
 } from './geometry.js';
 import { generatePlayablePuzzle } from './solver.js';
 import { buildRenderStack } from './render-order.js';
-import { assessGameStart } from './game-start.js';
+import { assessGameStart, snapshotAuthoringStateForPlay } from './game-start.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const board = document.querySelector('#board');
@@ -463,7 +463,7 @@ function renderGuide() {
   activeQuota.textContent = state.draft ? `${countUnderpassClicks(state, state.draft.ropeId)} / 2` : '0 / 2';
   undoButton.disabled = state.history.length === 0;
   sameSeedButton.disabled = state.seed === null;
-  startGameButton.disabled = state.ropes.length !== 10 || !validatePuzzle(state).valid;
+  startGameButton.disabled = !assessGameStart(state).allowed;
 }
 
 function renderAuthorMetrics() {
@@ -619,7 +619,7 @@ function startGame() {
     notify(decision.message);
     return;
   }
-  authoringSnapshot = structuredClone(state);
+  authoringSnapshot = snapshotAuthoringStateForPlay(state);
   state = createGameState(state);
   mode = 'game';
   selectedEndpoint = null;

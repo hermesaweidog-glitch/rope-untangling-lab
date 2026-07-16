@@ -297,7 +297,6 @@ function gamePuzzleSnapshot(state) {
 }
 
 export function createGameState(puzzleState) {
-  if (puzzleState.draft) throw new Error('請先完成正在建立的繩子。');
   const puzzle = gamePuzzleSnapshot(puzzleState);
   return {
     ...structuredClone(puzzle),
