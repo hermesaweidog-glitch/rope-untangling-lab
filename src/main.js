@@ -29,8 +29,9 @@ import {
   pointAndTangentAt,
   sampleCurve,
 } from './geometry.js';
-import { generatePlayablePuzzle, solvePuzzle } from './solver.js';
+import { generatePlayablePuzzle } from './solver.js';
 import { buildRenderStack } from './render-order.js';
+import { assessGameStart } from './game-start.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const board = document.querySelector('#board');
@@ -613,13 +614,9 @@ function renderAll() {
 }
 
 function startGame() {
-  if (state.ropes.length !== 10 || !validatePuzzle(state).valid) {
-    notify('請先完成十條繩子的出題');
-    return;
-  }
-  const solution = solvePuzzle(state);
-  if (!solution.solvable) {
-    notify('這個題目在目前移孔規則下找不到完整解，請調整纏繞或重新出題');
+  const decision = assessGameStart(state);
+  if (!decision.allowed) {
+    notify(decision.message);
     return;
   }
   authoringSnapshot = structuredClone(state);
