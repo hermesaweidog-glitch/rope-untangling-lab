@@ -353,6 +353,13 @@ export function moveEndpoint(game, ropeId, endpoint, destinationHoleId) {
       if (turns <= 0) return [];
       return [{ ...interaction, turns, twists: turns, kind: turns === 2 ? 'helix' : 'twist' }];
     });
+    // When releasing an existing knot by moving across it, clean prior crossings for that pair
+    // so the loop below can add a fresh one. The released contact will be marked 'actor-under'
+    // to reflect that the move pulled the actor rope under the target.
+    crossings = crossings.filter((crossing) => !(
+      (crossing.actorRopeId === ropeId && crossing.targetRopeId === effectiveContact.targetRopeId)
+        || (crossing.targetRopeId === ropeId && crossing.actorRopeId === effectiveContact.targetRopeId)
+    ));
   } else if (effectiveContact) {
     const interaction = {
       id: `interaction-game-${game.moveCount + 1}-${interactions.length + 1}`,
@@ -384,13 +391,14 @@ export function moveEndpoint(game, ropeId, endpoint, destinationHoleId) {
         || (item.targetRopeId === ropeId && item.actorRopeId === contact.targetRopeId)
     ))) continue;
     if (crossings.some((item) => item.actorRopeId === ropeId && item.targetRopeId === contact.targetRopeId)) continue;
+    const isReleased = released.some((r) => r.targetRopeId === contact.targetRopeId);
     crossings.push({
       id: `crossing-game-${game.moveCount + 1}-${crossings.length + 1}`,
       actorRopeId: ropeId,
       targetRopeId: contact.targetRopeId,
       targetT: contact.targetT,
       kind: 'overpass',
-      order: 'actor-over',
+      order: isReleased ? 'actor-under' : 'actor-over',
       source: 'gameplay',
       routeOrder: endpoint === 'A' ? -(game.moveCount + 1) : 1000 + game.moveCount + 1,
     });

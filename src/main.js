@@ -226,6 +226,30 @@ function createInteractionNode(interaction) {
   const focusedRopeId = focusedGameRopeId();
   const focused = mode === 'game' && focusedRopeId
     && (focusedRopeId === interaction.actorRopeId || focusedRopeId === interaction.targetRopeId);
+  // Split center bar for relative layer visualization.
+  // Use head (A) and tail (B) positions relative to knot point projected on target tangent.
+  // The half whose direction aligns with the "upper layer" end of blue gets actor color (per user example).
+  const halfLen = 31;
+  const p = interaction.point;
+  const t = interaction.tangent;
+  let posColor = target.color;
+  let negColor = actor.color;
+  const actorRope = state.ropes.find(r => r.id === interaction.actorRopeId);
+  if (actorRope) {
+    const endA = holePoint(actorRope.endpoints.A);
+    const endB = holePoint(actorRope.endpoints.B);
+    const vecA = {x: endA.x - p.x, y: endA.y - p.y};
+    const vecB = {x: endB.x - p.x, y: endB.y - p.y};
+    const projA = vecA.x * t.x + vecA.y * t.y;
+    const projB = vecB.x * t.x + vecB.y * t.y;
+    // If B end (often the moved end) is more "positive", color pos with actor to indicate that end on upper.
+    if (projB > projA) {
+      posColor = actor.color;
+      negColor = target.color;
+    }
+  }
+  const posLine = { x1: p.x, y1: p.y, x2: p.x + t.x * halfLen, y2: p.y + t.y * halfLen };
+  const negLine = { x1: p.x, y1: p.y, x2: p.x - t.x * halfLen, y2: p.y - t.y * halfLen };
   const group = svgElement('g', {
     class: `interaction-node${mode === 'game' ? ' game-node' : ''}${focused ? ' focused' : ''}`,
     'data-interaction-id': interaction.id,
@@ -242,7 +266,8 @@ function createInteractionNode(interaction) {
   group.append(
     svgElement('line', { class: 'local-mask', ...line }),
     svgElement('line', { class: 'local-target-shadow', ...line }),
-    svgElement('line', { class: 'local-target', ...line, stroke: target.color }),
+    svgElement('line', { class: 'local-target', ...posLine, stroke: target.color }),
+    svgElement('line', { class: 'local-target', ...negLine, stroke: actor.color }),
     svgElement('line', { class: 'local-target-shine', ...line }),
     svgElement('circle', { class: `node-dot ${interaction.kind}`, cx: interaction.point.x, cy: interaction.point.y, r: 12, fill: actor.color }),
     svgElement('text', { class: 'node-label', x: interaction.point.x, y: interaction.point.y + 1 }, `×${interaction.turns}`),
