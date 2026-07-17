@@ -242,15 +242,16 @@ function createInteractionNode(interaction) {
     const vecB = {x: endB.x - p.x, y: endB.y - p.y};
     const projA = vecA.x * t.x + vecA.y * t.y;
     const projB = vecB.x * t.x + vecB.y * t.y;
-    // To match user expectation: red (target) on "upper" half of bar, blue (actor) on "lower" half
-    // when the lower blue end is the one at relatively higher layer.
-    // Flip assignment so pos (one direction) tends to target (red), the other to actor (blue).
+    // Use A (18, start/before) and B (15, end/after) projections onto target tangent.
+    // The half aligned with the after endpoint (B near 15) gets actor color (blue)
+    // because the entanglement-to-15 segment is on the top layer (actor over).
+    // pos = +tangent dir, neg = -tangent dir.
     if (projB > projA) {
-      posColor = target.color;   // red upper
-      negColor = actor.color;    // blue lower
+      posColor = actor.color;    // blue on the + side (towards B/15, top layer)
+      negColor = target.color;   // red on the opposite half
     } else {
-      posColor = actor.color;
-      negColor = target.color;
+      posColor = target.color;
+      negColor = actor.color;
     }
   }
   const posLine = { x1: p.x, y1: p.y, x2: p.x + t.x * halfLen, y2: p.y + t.y * halfLen };

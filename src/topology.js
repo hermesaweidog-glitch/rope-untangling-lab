@@ -329,6 +329,9 @@ export function moveEndpoint(game, ropeId, endpoint, destinationHoleId) {
   const effectiveContact = relatedContact ?? (hasLayerDifference ? contacts[0] ?? null : null);
   const existingRelation = effectiveContact ? relationFor(effectiveContact.targetRopeId) : null;
 
+  const oldMovedPos = holePoint(sourceHoleId);
+  const oldEndpoints = { A: rope.endpoints.A, B: rope.endpoints.B };
+
   const holes = structuredClone(game.holes);
   holes[sourceHoleId].occupant = null;
   holes[destinationHoleId].occupant = { ropeId, end: endpoint };
@@ -343,30 +346,31 @@ export function moveEndpoint(game, ropeId, endpoint, destinationHoleId) {
 
   if (existingRelation) {
     // Geometric side-based decision for delta (add twist or release).
-    // If the actor rope's current A and B ends are on the same side of the target,
-    // and moving this end takes it to the opposite side, it typically adds a wrap (二次扭轉).
-    // Otherwise (or opposite sides already), the move unwinds one layer.
+    // If the actor rope's current A and B ends (BEFORE this move) are on the same side of the target,
+    // and moving this end takes it to the opposite side, it adds a wrap (二次扭轉).
+    // Otherwise the move unwinds one layer.
     let delta = -1;
     const targetRope = ropes.find((r) => r.id === effectiveContact.targetRopeId);
     if (targetRope) {
       const tA = holePoint(targetRope.endpoints.A);
       const tB = holePoint(targetRope.endpoints.B);
       const tVec = { x: tB.x - tA.x, y: tB.y - tA.y };
-      const actor = ropes.find((r) => r.id === ropeId);
-      if (actor) {
-        const pA = holePoint(actor.endpoints.A);
-        const pB = holePoint(actor.endpoints.B);
-        const crossA = tVec.x * (pA.y - tA.y) - tVec.y * (pA.x - tA.x);
-        const crossB = tVec.x * (pB.y - tA.y) - tVec.y * (pB.x - tA.x);
-        const sameSide = Math.sign(crossA) === Math.sign(crossB) || crossA === 0 || crossB === 0;
-        const pMoved = holePoint(actor.endpoints[endpoint]);
-        const pDest = holePoint(destinationHoleId);
-        const crossMoved = tVec.x * (pMoved.y - tA.y) - tVec.y * (pMoved.x - tA.x);
-        const crossDest = tVec.x * (pDest.y - tA.y) - tVec.y * (pDest.x - tA.x);
-        const crossesToOther = Math.sign(crossDest) !== Math.sign(crossMoved);
-        if (sameSide && crossesToOther) {
-          delta = 1; // add twist, as in user's 18->7 case from same side
-        }
+      // Use OLD endpoints (before the assignment above) to compute current sides and whether this move crosses the line.
+      const pA = holePoint(oldEndpoints.A);
+      const pB = holePoint(oldEndpoints.B);
+      const crossA = tVec.x * (pA.y - tA.y) - tVec.y * (pA.x - tA.x);
+      const crossB = tVec.x * (pB.y - tA.y) - tVec.y * (pB.x - tA.x);
+      const sameSide = Math.sign(crossA) === Math.sign(crossB) || crossA === 0 || crossB === 0;
+      const pMoved = oldMovedPos;
+      const pDest = holePoint(destinationHoleId);
+      const crossMoved = tVec.x * (pMoved.y - tA.y) - tVec.y * (pMoved.x - tA.x);
+      const crossDest = tVec.x * (pDest.y - tA.y) - tVec.y * (pDest.x - tA.x);
+      const crossesToOther = Math.sign(crossDest) !== Math.sign(crossMoved);
+      if (sameSide && crossesToOther) {
+        // When current ends on same side of target and this move crosses the line:
+        // - Moving the authoring start end ("A") adds a twist (二次扭轉) -- matches moving the under-start end (18).
+        // - Moving the "B" end releases one layer -- matches pulling the after/over end (15) out.
+        delta = (endpoint === "A") ? 1 : -1;
       }
     }
     interactions = interactions.flatMap((interaction) => {

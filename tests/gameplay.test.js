@@ -114,7 +114,7 @@ test('moving across an existing double twist releases one layer per move', () =>
   assert.equal(game.interactions[0].kind, 'twist');
   assert.equal(game.moveCount, 1);
 
-  game = moveEndpoint(game, 'rope-2', 'A', 3);
+  game = moveEndpoint(game, 'rope-2', 'B', 3);
   assert.equal(game.interactions.length, 0);
   assert.equal(game.moveCount, 2);
 });
