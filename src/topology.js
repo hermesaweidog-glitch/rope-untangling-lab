@@ -1,5 +1,5 @@
 import { HOLE_COUNT } from './constants.js';
-import { findMovementContacts, resolveDraftInteractions } from './geometry.js';
+import { findMovementContacts, resolveDraftInteractions, holePoint } from './geometry.js';
 
 export { HOLE_COUNT };
 export const MAX_ROPES = 10;
@@ -342,20 +342,47 @@ export function moveEndpoint(game, ropeId, endpoint, destinationHoleId) {
   let crossings = (game.crossings ?? []).map((crossing) => structuredClone(crossing));
 
   if (existingRelation) {
+    // Geometric side-based decision for delta (add twist or release).
+    // If the actor rope's current A and B ends are on the same side of the target,
+    // and moving this end takes it to the opposite side, it typically adds a wrap (二次扭轉).
+    // Otherwise (or opposite sides already), the move unwinds one layer.
+    let delta = -1;
+    const targetRope = ropes.find((r) => r.id === effectiveContact.targetRopeId);
+    if (targetRope) {
+      const tA = holePoint(targetRope.endpoints.A);
+      const tB = holePoint(targetRope.endpoints.B);
+      const tVec = { x: tB.x - tA.x, y: tB.y - tA.y };
+      const actor = ropes.find((r) => r.id === ropeId);
+      if (actor) {
+        const pA = holePoint(actor.endpoints.A);
+        const pB = holePoint(actor.endpoints.B);
+        const crossA = tVec.x * (pA.y - tA.y) - tVec.y * (pA.x - tA.x);
+        const crossB = tVec.x * (pB.y - tA.y) - tVec.y * (pB.x - tA.x);
+        const sameSide = Math.sign(crossA) === Math.sign(crossB) || crossA === 0 || crossB === 0;
+        const pMoved = holePoint(actor.endpoints[endpoint]);
+        const pDest = holePoint(destinationHoleId);
+        const crossMoved = tVec.x * (pMoved.y - tA.y) - tVec.y * (pMoved.x - tA.x);
+        const crossDest = tVec.x * (pDest.y - tA.y) - tVec.y * (pDest.x - tA.x);
+        const crossesToOther = Math.sign(crossDest) !== Math.sign(crossMoved);
+        if (sameSide && crossesToOther) {
+          delta = 1; // add twist, as in user's 18->7 case from same side
+        }
+      }
+    }
     interactions = interactions.flatMap((interaction) => {
       if (interaction.id !== existingRelation.id) return [interaction];
-      const turns = interaction.turns - 1;
-      released.push({
-        interactionId: interaction.id,
-        targetRopeId: effectiveContact.targetRopeId,
-        remainingTurns: Math.max(0, turns),
-      });
+      const turns = interaction.turns + delta;
+      if (delta < 0) {
+        released.push({
+          interactionId: interaction.id,
+          targetRopeId: effectiveContact.targetRopeId,
+          remainingTurns: Math.max(0, turns),
+        });
+      }
       if (turns <= 0) return [];
       return [{ ...interaction, turns, twists: turns, kind: turns === 2 ? 'helix' : 'twist' }];
     });
-    // When releasing an existing knot by moving across it, clean prior crossings for that pair
-    // so the loop below can add a fresh one. The released contact will be marked 'actor-under'
-    // to reflect that the move pulled the actor rope under the target.
+    // Clean prior crossings for the pair so geometry can be refreshed (whether releasing or adding twist).
     crossings = crossings.filter((crossing) => !(
       (crossing.actorRopeId === ropeId && crossing.targetRopeId === effectiveContact.targetRopeId)
         || (crossing.targetRopeId === ropeId && crossing.actorRopeId === effectiveContact.targetRopeId)
@@ -426,9 +453,26 @@ export function moveEndpoint(game, ropeId, endpoint, destinationHoleId) {
 export function isRopeRemovable(game, ropeId) {
   const rope = game.ropes.find((item) => item.id === ropeId);
   if (!rope) return false;
-  return !game.interactions.some(
+
+  const hasInteraction = game.interactions.some(
     (interaction) => interaction.actorRopeId === ropeId || interaction.targetRopeId === ropeId,
   );
+  if (hasInteraction) return false;
+
+  // A rope is not fully on the top layer if it is under any other rope in a crossing.
+  // This matches the error "尚未完全位於最上層" and user expectation that visually under ropes cannot be removed first.
+  const crossings = game.crossings ?? [];
+  const isUnderInAnyCrossing = crossings.some((crossing) => {
+    if (crossing.source !== "gameplay") return false; // authoring pure underpass crossings are visual only and do not block removal (per tests)
+    if (crossing.actorRopeId === ropeId) {
+      return crossing.order === "actor-under";
+    }
+    if (crossing.targetRopeId === ropeId) {
+      return crossing.order === "actor-over"; // actor over => target under
+    }
+    return false;
+  });
+  return !isUnderInAnyCrossing;
 }
 
 export function removeRope(game, ropeId) {

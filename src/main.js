@@ -242,8 +242,13 @@ function createInteractionNode(interaction) {
     const vecB = {x: endB.x - p.x, y: endB.y - p.y};
     const projA = vecA.x * t.x + vecA.y * t.y;
     const projB = vecB.x * t.x + vecB.y * t.y;
-    // If B end (often the moved end) is more "positive", color pos with actor to indicate that end on upper.
+    // To match user expectation: red (target) on "upper" half of bar, blue (actor) on "lower" half
+    // when the lower blue end is the one at relatively higher layer.
+    // Flip assignment so pos (one direction) tends to target (red), the other to actor (blue).
     if (projB > projA) {
+      posColor = target.color;   // red upper
+      negColor = actor.color;    // blue lower
+    } else {
       posColor = actor.color;
       negColor = target.color;
     }
@@ -266,8 +271,8 @@ function createInteractionNode(interaction) {
   group.append(
     svgElement('line', { class: 'local-mask', ...line }),
     svgElement('line', { class: 'local-target-shadow', ...line }),
-    svgElement('line', { class: 'local-target', ...posLine, stroke: target.color }),
-    svgElement('line', { class: 'local-target', ...negLine, stroke: actor.color }),
+    svgElement('line', { class: 'local-target', ...posLine, stroke: posColor }),
+    svgElement('line', { class: 'local-target', ...negLine, stroke: negColor }),
     svgElement('line', { class: 'local-target-shine', ...line }),
     svgElement('circle', { class: `node-dot ${interaction.kind}`, cx: interaction.point.x, cy: interaction.point.y, r: 12, fill: actor.color }),
     svgElement('text', { class: 'node-label', x: interaction.point.x, y: interaction.point.y + 1 }, `×${interaction.turns}`),
